@@ -1,6 +1,11 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import opencascade from "replicad-opencascadejs";
-import { measureShapeVolumeProperties, setOC, type Shape3D } from "replicad";
+import {
+  makeBox,
+  measureShapeVolumeProperties,
+  setOC,
+  type Shape3D,
+} from "replicad";
 
 import {
   buildEffectiveConfig,
@@ -10,8 +15,10 @@ import { buildStlExport, groupPartsByColor } from "../stl";
 import type { ModelPart } from "../types";
 import {
   pinRecpHeight,
+  pinRecpNegative,
   validateWatermelonModel,
   watermelonModel,
+  type PinRecpConfig,
   type WatermelonModelConfig,
 } from "./watermelon";
 
@@ -151,6 +158,34 @@ describe("watermelon Replicad model", () => {
     });
 
     expect(totalVolume(wider)).toBeLessThan(totalVolume(baseParts));
+  });
+
+  it("uses a flat vertical tab face while keeping the lower slope", () => {
+    const testConfig: PinRecpConfig = {
+      base: { length: 22, width: 5.5, depth: 0.6 },
+      tabs: {
+        cutoutLength: 4.9,
+        geometry: {
+          width: 0.8,
+          tabHeight: 0.8,
+          bottomSlopeHeight: 0.4,
+        },
+      },
+    };
+
+    const negative = pinRecpNegative(testConfig, 0);
+    const widthAt = (z: number) => {
+      const slice = negative.intersect(
+        makeBox([-100, -0.05, z - 0.005], [100, 0.05, z + 0.005]),
+      );
+      return slice.boundingBox.width;
+    };
+
+    // The flat vertical tab face reaches all the way to the opening plane.
+    expect(widthAt(0.01)).toBeCloseTo(5.5 - 2 * 0.8, 1);
+    // The lower slope remains: the tab gets narrower toward its top.
+    expect(widthAt(1.1)).toBeGreaterThan(widthAt(0.01));
+    expect(widthAt(1.1)).toBeLessThan(5.5);
   });
 
   it("supports disabling the optional retaining clip", () => {

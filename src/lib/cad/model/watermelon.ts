@@ -22,7 +22,8 @@ export type BaseConfig = {
 
 export type TabGeometry = {
   width: number;
-  topSlopeHeight: number;
+  /** Height of the flat, vertical tab face above the lower lead-in slope. */
+  tabHeight: number;
   bottomSlopeHeight: number;
 };
 
@@ -73,7 +74,7 @@ export function defaultSeedDepth(thickness: number): number {
  */
 export function pinRecpHeight(config: PinRecpConfig): number {
   const { base, tabs } = config;
-  let res = base.depth + tabs.geometry.topSlopeHeight + tabs.geometry.bottomSlopeHeight;
+  let res = base.depth + tabs.geometry.tabHeight + tabs.geometry.bottomSlopeHeight;
   if (config.retainerClip) {
     res += config.retainerClip.depth;
   }
@@ -92,7 +93,7 @@ export function pinRecpNegative(config: PinRecpConfig, extraSpace = 0): Shape3D 
   const { base, tabs, retainerClip } = config;
 
   const openingHeight =
-    base.depth + tabs.geometry.topSlopeHeight + tabs.geometry.bottomSlopeHeight;
+    base.depth + tabs.geometry.tabHeight + tabs.geometry.bottomSlopeHeight;
 
   let baseBody = drawRectangle(base.width, base.length)
     .sketchOnPlane("XY")
@@ -110,9 +111,14 @@ export function pinRecpNegative(config: PinRecpConfig, extraSpace = 0): Shape3D 
   }
 
   // Remove the retaining tab volumes from the negative.
+  // The tab has a printable lower lead-in slope, then a flat vertical face.
+  // The upper slope from the living-hinge design is intentionally gone.
+  const tabTop =
+    base.depth + tabs.geometry.bottomSlopeHeight + tabs.geometry.tabHeight;
   const tabCutoutProfile = draw([-base.width / 2, base.depth])
     .line(tabs.geometry.width, tabs.geometry.bottomSlopeHeight)
-    .line(-tabs.geometry.width, tabs.geometry.topSlopeHeight)
+    .lineTo([-base.width / 2 + tabs.geometry.width, tabTop])
+    .lineTo([-base.width / 2, tabTop])
     .close();
 
   const mirroredTabCutoutProfile = tabCutoutProfile
@@ -344,9 +350,9 @@ export function validateWatermelonModel(
   // Tabs.
   positive(pinRecp.tabs.geometry.width, "pinRecp.tabs.geometry.width", "Tab width");
   nonNegative(
-    pinRecp.tabs.geometry.topSlopeHeight,
-    "pinRecp.tabs.geometry.topSlopeHeight",
-    "Top slope height",
+    pinRecp.tabs.geometry.tabHeight,
+    "pinRecp.tabs.geometry.tabHeight",
+    "Tab height",
   );
   nonNegative(
     pinRecp.tabs.geometry.bottomSlopeHeight,
@@ -459,7 +465,7 @@ const definition: ConfigDefinition<WatermelonModelConfig> = {
         cutoutLength: 4.9,
         geometry: {
           width: 0.8,
-          topSlopeHeight: 0.8,
+          tabHeight: 0.8,
           bottomSlopeHeight: 0.4,
         },
       },
@@ -501,10 +507,12 @@ const definition: ConfigDefinition<WatermelonModelConfig> = {
               label: "Tab geometry",
               fields: {
                 width: { label: "Tab width", unit: "mm", step: 0.1 },
-                topSlopeHeight: {
-                  label: "Top slope height",
+                tabHeight: {
+                  label: "Tab height",
                   unit: "mm",
                   step: 0.1,
+                  description:
+                    "Height of the flat vertical tab face. The lower lead-in slope remains.",
                 },
                 bottomSlopeHeight: {
                   label: "Bottom slope height",

@@ -22,7 +22,7 @@ describe("generic configuration UI", () => {
     const paths = nodes.map((node) => node.path);
 
     expect(paths).toContain("pinRecp.base.length");
-    expect(paths).toContain("pinRecp.tabs.geometry.topSlopeHeight");
+    expect(paths).toContain("pinRecp.tabs.geometry.tabHeight");
     expect(paths).toContain("watermelon.radius");
     expect(paths).toContain("watermelon.seedAngle");
     expect(paths).toContain("watermelon.seedDepth");
