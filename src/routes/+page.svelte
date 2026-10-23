@@ -7,7 +7,6 @@
     buildEffectiveConfig,
     buildFormNodes,
     createFormState,
-    labelForIssue,
     validateConfigValues,
   } from "../lib/cad/config-form";
   import { downloadStlZip } from "../lib/cad/export";
@@ -225,10 +224,7 @@
           <h2>Check the configuration</h2>
           <ul>
             {#each issues as issue (issue.path + issue.message)}
-              <li>
-                <span class="issue-label">{labelForIssue(model.definition, issue)}</span>
-                {issue.message}
-              </li>
+              <li>{issue.message}</li>
             {/each}
           </ul>
         </section>
@@ -530,10 +526,6 @@
 
   .messages li + li {
     margin-top: 3px;
-  }
-
-  .issue-label {
-    font-weight: 600;
   }
 
   .viewport {

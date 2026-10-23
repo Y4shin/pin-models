@@ -1,10 +1,9 @@
 /**
- * Parametric watermelon model.
+ * Parametric watermelon brooch model.
  *
  * This file is the model-specific part of the configurator. The geometry is the
- * Replicad implementation from the original `example.ts` and is kept intact.
- * Everything else in the application (UI, worker, viewer, export) only depends
- * on the generic `ParametricModel` contract.
+ * Replicad implementation from the original `example.ts`, with the pin
+ * receptacle adapted for a simplified, printer-aware configuration.
  */
 import { draw, drawRectangle, type Drawing, type Shape3D } from "replicad";
 import type {
@@ -13,6 +12,46 @@ import type {
   ParametricModel,
   ValidationIssue,
 } from "../types";
+
+// ---------------------------------------------------------------------------
+// Public configuration
+// ---------------------------------------------------------------------------
+
+export type WatermelonConfig = {
+  /** Overall width across the flat back. Height is half of this value. */
+  width: number;
+  thickness: number;
+  appearance: {
+    outerRindWidth: number;
+    innerRindWidth: number;
+  };
+};
+
+export type PinConfig = {
+  length: number;
+  width: number;
+  thickness: number;
+  /** Extra clearance per side around the pin. */
+  clearance: number;
+  retainingClip: boolean;
+};
+
+export type PrinterConfig = {
+  nozzleDiameter: number;
+  layerHeight: number;
+  /** Adds the printable lower lead-in slope to the retaining tabs. */
+  bottomSlopes: boolean;
+};
+
+export type WatermelonModelConfig = {
+  watermelon: WatermelonConfig;
+  pin: PinConfig;
+  printer: PrinterConfig;
+};
+
+// ---------------------------------------------------------------------------
+// Internal geometry configuration
+// ---------------------------------------------------------------------------
 
 export type BaseConfig = {
   length: number;
@@ -46,26 +85,314 @@ export type PinRecpConfig = {
   retainerClip?: RetainerClipConfig;
 };
 
-export type WatermelonConfig = {
+export type WatermelonGeometryConfig = {
   thickness: number;
   radius: number;
   rindWidth: number;
   innerRindWidth: number;
-  pinRecpOffset: number;
   seedAngle?: number;
   seedDepth?: number;
 };
 
-export type WatermelonModelConfig = {
-  pinRecp: PinRecpConfig;
-  watermelon: WatermelonConfig;
-};
+// ---------------------------------------------------------------------------
+// Derived geometry and print rules
+// ---------------------------------------------------------------------------
 
 export const DEFAULT_SEED_ANGLE = 30;
+const SEED_DEPTH_FRACTION = 0.35;
+const SEED_ROW_RADIUS_FRACTION = 0.66;
+const SEED_COUNT = 5;
+const SEED_START_ANGLE = 18;
+const SEED_STEP_ANGLE = 36;
+const DEFAULT_CUTOUT_LENGTH = 4.9;
+const DEFAULT_CLIP_CAVITY_LENGTH = 1.6;
+const DEFAULT_CUTOUT_PIN_LENGTH = 22;
+const CUTOUT_RATIO = DEFAULT_CUTOUT_LENGTH / DEFAULT_CUTOUT_PIN_LENGTH;
 
 /** Default seed depth, relative to the watermelon thickness. */
 export function defaultSeedDepth(thickness: number): number {
-  return thickness * 0.35;
+  return thickness * SEED_DEPTH_FRACTION;
+}
+
+export interface SeedProfileMetrics {
+  sideHeight: number;
+  baseHalfWidth: number;
+  tipHalfWidth: number;
+  tipWidth: number;
+  sideAngle: number;
+  capRise: number;
+  /** Conservative distance from the seed centre to its furthest point. */
+  maxRadius: number;
+}
+
+/** Metrics of the seed profile, shared by geometry and validation. */
+export function seedProfileMetrics(
+  fleshRadius: number,
+  seedAngle = DEFAULT_SEED_ANGLE,
+): SeedProfileMetrics {
+  const halfAngle = (seedAngle * Math.PI) / 360;
+  const sideHeight = fleshRadius * 0.24;
+  const baseHalfWidth =
+    1.35 * (fleshRadius * 0.008 + sideHeight * Math.tan(halfAngle));
+  const tipHalfWidth = baseHalfWidth * 0.55;
+  const sideAngle = Math.atan2(baseHalfWidth - tipHalfWidth, sideHeight);
+  const capRise = tipHalfWidth * (1 / Math.cos(sideAngle) - Math.tan(sideAngle));
+
+  return {
+    sideHeight,
+    baseHalfWidth,
+    tipHalfWidth,
+    tipWidth: tipHalfWidth * 2,
+    sideAngle,
+    capRise,
+    maxRadius: Math.hypot(baseHalfWidth, sideHeight / 2 + capRise),
+  };
+}
+
+type Vec2 = [number, number];
+
+function sampleArcThroughPoints(
+  start: Vec2,
+  mid: Vec2,
+  end: Vec2,
+  steps = 48,
+): Vec2[] {
+  const [bx, by] = start;
+  const [cx, cy] = end;
+  const [mx, my] = mid;
+  const d = 2 * (bx * (cy - my) + cx * (my - by) + mx * (by - cy));
+
+  if (Math.abs(d) < 1e-12) return [start, mid, end];
+
+  const ux =
+    ((bx * bx + by * by) * (cy - my) +
+      (cx * cx + cy * cy) * (my - by) +
+      (mx * mx + my * my) * (by - cy)) /
+    d;
+  const uy =
+    ((bx * bx + by * by) * (mx - cx) +
+      (cx * cx + cy * cy) * (bx - mx) +
+      (mx * mx + my * my) * (cx - bx)) /
+    d;
+  const radius = Math.hypot(bx - ux, by - uy);
+  const startAngle = Math.atan2(by - uy, bx - ux);
+  const endAngle = Math.atan2(cy - uy, cx - ux);
+  const midAngle = Math.atan2(my - uy, mx - ux);
+
+  const normalize = (angle: number) => {
+    let value = angle;
+    while (value < 0) value += 2 * Math.PI;
+    while (value >= 2 * Math.PI) value -= 2 * Math.PI;
+    return value;
+  };
+
+  let sweep = normalize(endAngle - startAngle);
+  if (normalize(midAngle - startAngle) > sweep) {
+    sweep -= 2 * Math.PI;
+  }
+
+  const points: Vec2[] = [];
+  for (let index = 0; index <= steps; index += 1) {
+    const angle = startAngle + (sweep * index) / steps;
+    points.push([
+      ux + radius * Math.cos(angle),
+      uy + radius * Math.sin(angle),
+    ]);
+  }
+  return points;
+}
+
+function sampleCubicBezier(
+  p0: Vec2,
+  p1: Vec2,
+  p2: Vec2,
+  p3: Vec2,
+  steps = 48,
+): Vec2[] {
+  const points: Vec2[] = [];
+  for (let index = 0; index <= steps; index += 1) {
+    const t = index / steps;
+    const u = 1 - t;
+    points.push([
+      u * u * u * p0[0] +
+        3 * u * u * t * p1[0] +
+        3 * u * t * t * p2[0] +
+        t * t * t * p3[0],
+      u * u * u * p0[1] +
+        3 * u * u * t * p1[1] +
+        3 * u * t * t * p2[1] +
+        t * t * t * p3[1],
+    ]);
+  }
+  return points;
+}
+
+function seedProfileSamples(metrics: SeedProfileMetrics): Vec2[] {
+  const { sideHeight, baseHalfWidth, tipHalfWidth, sideAngle, capRise } = metrics;
+  const bottomY = -sideHeight / 2;
+  const topY = sideHeight / 2;
+  const handleLength = baseHalfWidth * 2;
+  const handleX = handleLength * Math.sin(sideAngle);
+  const handleY = handleLength * Math.cos(sideAngle);
+
+  const baseLeft: Vec2 = [-baseHalfWidth, bottomY];
+  const tipLeft: Vec2 = [-tipHalfWidth, topY];
+  const tipRight: Vec2 = [tipHalfWidth, topY];
+  const baseRight: Vec2 = [baseHalfWidth, bottomY];
+
+  return [
+    baseLeft,
+    ...sampleArcThroughPoints(tipLeft, [0, topY + capRise], tipRight),
+    baseRight,
+    ...sampleCubicBezier(
+      baseRight,
+      [baseHalfWidth + handleX, bottomY - handleY],
+      [-baseHalfWidth - handleX, bottomY - handleY],
+      baseLeft,
+    ),
+  ];
+}
+
+/**
+ * World-space X/Y bounds of one seed. Used to keep the retaining slot and clip
+ * away from the seed recesses without running CAD during validation.
+ */
+export function seedWorldBounds(
+  fleshRadius: number,
+  seedAngle: number,
+  angleDegrees: number,
+  rowFraction = SEED_ROW_RADIUS_FRACTION,
+): { minX: number; maxX: number; minY: number; maxY: number } {
+  const samples = seedProfileSamples(seedProfileMetrics(fleshRadius, seedAngle));
+  const rotation = ((angleDegrees + 90) * Math.PI) / 180;
+  const radians = (angleDegrees * Math.PI) / 180;
+  const rowRadius = fleshRadius * rowFraction;
+  const centerX = rowRadius * Math.cos(radians);
+  const centerY = rowRadius * Math.sin(radians);
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+
+  for (const [x, y] of samples) {
+    const worldX = centerX + x * cos - y * sin;
+    const worldY = centerY + x * sin + y * cos;
+    minX = Math.min(minX, worldX);
+    maxX = Math.max(maxX, worldX);
+    minY = Math.min(minY, worldY);
+    maxY = Math.max(maxY, worldY);
+  }
+
+  return { minX, maxX, minY, maxY };
+}
+
+export interface DerivedGeometry {
+  radius: number;
+  seedAngle: number;
+  seedDepth: number;
+  pinRecp: PinRecpConfig;
+  pinRecpOffset: number;
+  extraSpace: number;
+  slotWidth: number;
+  slotDepth: number;
+  tabWidth: number;
+  tabHeight: number;
+  bottomSlopeHeight: number;
+  openingHeight: number;
+  receptacleHeight: number;
+  clipWidth: number;
+  clipWallDistance: number;
+  cutoutLength: number;
+  minTopWall: number;
+  minColorWall: number;
+  minSeedWall: number;
+}
+
+/**
+ * Expands the user-facing configuration into the detailed receptacle geometry.
+ * The constants are chosen so the original defaults are preserved for a
+ * 0.4 mm nozzle and 0.2 mm layer height.
+ */
+export function deriveGeometry(config: WatermelonModelConfig): DerivedGeometry {
+  const { watermelon, pin, printer } = config;
+
+  const nozzle = printer.nozzleDiameter;
+  const layer = printer.layerHeight;
+
+  const slotWidth = pin.width + 2 * pin.clearance;
+  const slotDepth = pin.thickness + 2 * pin.clearance;
+
+  const tabWidth = 2 * nozzle;
+  const tabHeight = 2 * nozzle;
+  // Derived from all three print dimensions; the defaults give 0.4 mm.
+  const bottomSlopeHeight = printer.bottomSlopes
+    ? Number(((tabWidth * layer) / nozzle).toFixed(12))
+    : 0;
+
+  const openingHeight = slotDepth + tabHeight + bottomSlopeHeight;
+
+  const clipWallDistance = Math.max(nozzle, 2 * layer);
+  const clipDepth = Math.max(3 * layer, slotDepth);
+
+  const retainerClip: RetainerClipConfig | undefined = pin.retainingClip
+    ? {
+        depth: clipDepth,
+        protrusion: nozzle,
+        clipThickness: 2 * nozzle,
+        cavityLength: DEFAULT_CLIP_CAVITY_LENGTH,
+        wallDistance: clipWallDistance,
+      }
+    : undefined;
+
+  const cutoutLength = Math.min(
+    DEFAULT_CUTOUT_LENGTH,
+    Math.max(2.0, pin.length * CUTOUT_RATIO),
+  );
+
+  const pinRecp: PinRecpConfig = {
+    base: {
+      length: pin.length,
+      width: slotWidth,
+      depth: slotDepth,
+    },
+    tabs: {
+      cutoutLength,
+      geometry: {
+        width: tabWidth,
+        tabHeight,
+        bottomSlopeHeight,
+      },
+    },
+    retainerClip,
+  };
+
+  const minColorWall = Math.max(2 * nozzle, 5 * layer);
+  const pinRecpOffset = Math.max(1, minColorWall);
+
+  return {
+    radius: watermelon.width / 2,
+    seedAngle: DEFAULT_SEED_ANGLE,
+    seedDepth: defaultSeedDepth(watermelon.thickness),
+    pinRecp,
+    pinRecpOffset,
+    extraSpace: watermelon.width / 2,
+    slotWidth,
+    slotDepth,
+    tabWidth,
+    tabHeight,
+    bottomSlopeHeight,
+    openingHeight,
+    receptacleHeight: openingHeight + (retainerClip ? clipDepth : 0),
+    clipWidth: slotWidth - 2 * clipWallDistance,
+    clipWallDistance,
+    cutoutLength,
+    minTopWall: Math.max(3 * layer, 1.5 * nozzle),
+    minColorWall,
+    minSeedWall: Math.max(2 * nozzle, 3 * layer),
+  };
 }
 
 /**
@@ -101,10 +428,14 @@ export function pinRecpNegative(config: PinRecpConfig, extraSpace = 0): Shape3D 
     .asShape3D();
 
   if (extraSpace > 0) {
+    // The side insertion slot only needs to pass the pin. Keeping it at the
+    // channel depth avoids cutting into the seed recesses and the rind.
+    // The negative is flipped after construction, so the short extension must
+    // start at the local top to end up at the opening plane after the flip.
     const extension = drawRectangle(base.width, extraSpace)
       .translate(0, -(base.length + extraSpace) / 2)
-      .sketchOnPlane("XY")
-      .extrude(openingHeight)
+      .sketchOnPlane("XY", openingHeight - base.depth)
+      .extrude(base.depth)
       .asShape3D();
 
     baseBody = baseBody.fuse(extension);
@@ -112,7 +443,6 @@ export function pinRecpNegative(config: PinRecpConfig, extraSpace = 0): Shape3D 
 
   // Remove the retaining tab volumes from the negative.
   // The tab has a printable lower lead-in slope, then a flat vertical face.
-  // The upper slope from the living-hinge design is intentionally gone.
   const tabTop =
     base.depth + tabs.geometry.bottomSlopeHeight + tabs.geometry.tabHeight;
   const tabCutoutProfile = draw([-base.width / 2, base.depth])
@@ -169,6 +499,10 @@ export function pinRecpNegative(config: PinRecpConfig, extraSpace = 0): Shape3D 
   return shape.rotate(180, [0, 0, 0], [1, 0, 0]).translateZ(openingHeight);
 }
 
+// ---------------------------------------------------------------------------
+// Geometry
+// ---------------------------------------------------------------------------
+
 function halfDisc(r: number): Drawing {
   return draw([-r, 0]).threePointsArcTo([r, 0], [0, r]).close();
 }
@@ -189,7 +523,7 @@ function extrudeBody(profile: Drawing, thickness: number): Shape3D {
  * Creates a flat half-watermelon with five black seed bodies fitted into
  * matching recesses in the flesh.
  */
-export function watermelon(config: WatermelonConfig): ModelPart[] {
+export function watermelon(config: WatermelonGeometryConfig): ModelPart[] {
   const {
     radius,
     thickness,
@@ -221,24 +555,16 @@ export function watermelon(config: WatermelonConfig): ModelPart[] {
   }
 
   function createSeedProfile(): Drawing {
-    const halfAngle = (seedAngle * Math.PI) / 360;
-    // Make the seed slightly longer.
-    const sideHeight = fleshRadius * 0.24;
-
-    // Widen the broad end by 35%.
-    const baseHalfWidth =
-      1.35 * (fleshRadius * 0.008 + sideHeight * Math.tan(halfAngle));
-
-    // Keep a rounded, moderately tapered narrow end.
-    const tipHalfWidth = baseHalfWidth * 0.55;
-
-    // Calculate the actual side angle for the rounded connections.
-    const sideAngle = Math.atan2(baseHalfWidth - tipHalfWidth, sideHeight);
+    const {
+      sideHeight,
+      baseHalfWidth,
+      tipHalfWidth,
+      sideAngle,
+      capRise,
+    } = seedProfileMetrics(fleshRadius, seedAngle);
 
     const bottomY = -sideHeight / 2;
     const topY = sideHeight / 2;
-
-    const capRise = tipHalfWidth * (1 / Math.cos(sideAngle) - Math.tan(sideAngle));
 
     const handleLength = baseHalfWidth * 2;
     const handleX = handleLength * Math.sin(sideAngle);
@@ -265,12 +591,12 @@ export function watermelon(config: WatermelonConfig): ModelPart[] {
   let fleshBody = extrudeBody(halfDisc(fleshRadius), thickness);
 
   const seedProfile = createSeedProfile();
-  const rowRadius = fleshRadius * 0.62;
+  const rowRadius = fleshRadius * SEED_ROW_RADIUS_FRACTION;
   const epsilon = thickness * 0.001;
   const seedBodies: ModelPart[] = [];
 
-  for (let index = 0; index < 5; index++) {
-    const angle = 18 + index * 36;
+  for (let index = 0; index < SEED_COUNT; index++) {
+    const angle = SEED_START_ANGLE + index * SEED_STEP_ANGLE;
     const radians = (angle * Math.PI) / 180;
 
     const positionedProfile = seedProfile
@@ -312,142 +638,262 @@ export function watermelon(config: WatermelonConfig): ModelPart[] {
  * negative from every part, exactly as the original `main()` did.
  */
 export function generateWatermelon(config: WatermelonModelConfig): ModelPart[] {
-  const negative = pinRecpNegative(config.pinRecp, config.watermelon.radius)
+  const derived = deriveGeometry(config);
+  const negative = pinRecpNegative(derived.pinRecp, derived.extraSpace)
     .rotate(90)
     .translateY(
-      config.watermelon.pinRecpOffset + config.pinRecp.base.width / 2,
+      derived.pinRecpOffset + derived.pinRecp.base.width / 2,
     );
 
-  return watermelon(config.watermelon).map((part) => ({
+  return watermelon({
+    radius: derived.radius,
+    thickness: config.watermelon.thickness,
+    rindWidth: config.watermelon.appearance.outerRindWidth,
+    innerRindWidth: config.watermelon.appearance.innerRindWidth,
+    seedAngle: derived.seedAngle,
+    seedDepth: derived.seedDepth,
+  }).map((part) => ({
     ...part,
     shape: part.shape.cut(negative),
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+
+const EPSILON = 1e-6;
+
+function mm(value: number): string {
+  return `${Number(value.toFixed(2))} mm`;
 }
 
 export function validateWatermelonModel(
   config: WatermelonModelConfig,
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
-  const { pinRecp, watermelon: melon } = config;
+  const { watermelon, pin, printer } = config;
+
+  const outerRind = watermelon.appearance.outerRindWidth;
+  const innerRind = watermelon.appearance.innerRindWidth;
+  const nozzle = printer.nozzleDiameter;
+  const layer = printer.layerHeight;
+
+  let basicsValid = true;
 
   const positive = (value: number, path: string, label: string) => {
     if (!Number.isFinite(value) || value <= 0) {
       issues.push({ path, message: `${label} must be a positive number.` });
+      basicsValid = false;
     }
   };
 
   const nonNegative = (value: number, path: string, label: string) => {
     if (!Number.isFinite(value) || value < 0) {
       issues.push({ path, message: `${label} must be zero or greater.` });
+      basicsValid = false;
     }
   };
 
-  // Pin receptacle base.
-  positive(pinRecp.base.length, "pinRecp.base.length", "Receptacle length");
-  positive(pinRecp.base.width, "pinRecp.base.width", "Receptacle width");
-  positive(pinRecp.base.depth, "pinRecp.base.depth", "Receptacle depth");
+  positive(watermelon.width, "watermelon.width", "Watermelon width");
+  positive(watermelon.thickness, "watermelon.thickness", "Watermelon thickness");
+  positive(
+    outerRind,
+    "watermelon.appearance.outerRindWidth",
+    "Outer rind width",
+  );
+  positive(
+    innerRind,
+    "watermelon.appearance.innerRindWidth",
+    "Inner rind width",
+  );
+  positive(pin.length, "pin.length", "Pin length");
+  positive(pin.width, "pin.width", "Pin width");
+  positive(pin.thickness, "pin.thickness", "Pin thickness");
+  nonNegative(pin.clearance, "pin.clearance", "Fit clearance");
+  positive(nozzle, "printer.nozzleDiameter", "Nozzle diameter");
+  positive(layer, "printer.layerHeight", "Layer height");
 
-  // Tabs.
-  positive(pinRecp.tabs.geometry.width, "pinRecp.tabs.geometry.width", "Tab width");
-  nonNegative(
-    pinRecp.tabs.geometry.tabHeight,
-    "pinRecp.tabs.geometry.tabHeight",
-    "Tab height",
-  );
-  nonNegative(
-    pinRecp.tabs.geometry.bottomSlopeHeight,
-    "pinRecp.tabs.geometry.bottomSlopeHeight",
-    "Bottom slope height",
-  );
-  if (
-    !Number.isFinite(pinRecp.tabs.cutoutLength) ||
-    pinRecp.tabs.cutoutLength < 0 ||
-    (Number.isFinite(pinRecp.base.length) &&
-      pinRecp.tabs.cutoutLength >= pinRecp.base.length)
-  ) {
+  if (!basicsValid) return issues;
+
+  if (layer > nozzle + EPSILON) {
     issues.push({
-      path: "pinRecp.tabs.cutoutLength",
-      message:
-        "Cutout length must be zero or greater and smaller than the receptacle length.",
+      path: "printer.layerHeight",
+      message: "Layer height must not exceed the nozzle diameter.",
     });
   }
 
-  // Retaining clip.
-  const clip = pinRecp.retainerClip;
-  if (clip) {
-    positive(clip.depth, "pinRecp.retainerClip.depth", "Clip depth");
-    nonNegative(
-      clip.protrusion,
-      "pinRecp.retainerClip.protrusion",
-      "Clip protrusion",
-    );
-    positive(
-      clip.clipThickness,
-      "pinRecp.retainerClip.clipThickness",
-      "Clip thickness",
-    );
-    positive(
-      clip.cavityLength,
-      "pinRecp.retainerClip.cavityLength",
-      "Clip cavity length",
-    );
-    if (!Number.isFinite(clip.wallDistance) || clip.wallDistance < 0) {
+  const radius = watermelon.width / 2;
+  const fleshRadius = radius - outerRind - innerRind;
+
+  if (fleshRadius <= EPSILON) {
+    issues.push({
+      path: "watermelon.appearance.outerRindWidth",
+      message:
+        "The rind widths leave no red flesh. Reduce a rind width or increase the watermelon width.",
+    });
+    return issues;
+  }
+
+  const derived = deriveGeometry(config);
+  const thickness = watermelon.thickness;
+
+  // The receptacle must leave a printable top wall.
+  const minimumThickness = derived.receptacleHeight + derived.minTopWall;
+  if (thickness + EPSILON < minimumThickness) {
+    issues.push({
+      path: "watermelon.thickness",
+      message: `Thickness must be at least ${mm(minimumThickness)} for this pin and printer. It must leave ${mm(derived.minTopWall)} of material above the cavity.`,
+    });
+  }
+
+  // The tabs and clip must fit across the slot.
+  const minimumPinWidthForTabs =
+    2 * derived.tabWidth + 2 * nozzle - 2 * pin.clearance;
+  if (derived.slotWidth + EPSILON < minimumPinWidthForTabs) {
+    issues.push({
+      path: "pin.width",
+      message: `Pin width is too small for the retaining tabs. It must be at least ${mm(minimumPinWidthForTabs)}.`,
+    });
+  }
+
+  if (pin.retainingClip) {
+    if (derived.clipWallDistance + EPSILON < nozzle) {
       issues.push({
-        path: "pinRecp.retainerClip.wallDistance",
-        message: "Clip wall distance must be zero or greater.",
+        path: "pin.width",
+        message:
+          "The retaining clip needs a side gap of at least one nozzle diameter so it can bend down.",
       });
-    } else if (
-      Number.isFinite(pinRecp.base.width) &&
-      2 * clip.wallDistance >= pinRecp.base.width
-    ) {
+    }
+
+    const minimumPinWidthForClip =
+      2 * derived.clipWallDistance + 2 * nozzle - 2 * pin.clearance;
+    if (derived.clipWidth + EPSILON < 2 * nozzle) {
       issues.push({
-        path: "pinRecp.retainerClip.wallDistance",
-        message: "Clip wall distance must be less than half of the receptacle width.",
+        path: "pin.width",
+        message: `Pin width is too small for the retaining clip and its side gaps. It must be at least ${mm(minimumPinWidthForClip)}.`,
+      });
+    }
+
+    const clip = derived.pinRecp.retainerClip!;
+    if (derived.slotDepth + EPSILON < clip.protrusion + layer) {
+      issues.push({
+        path: "pin.thickness",
+        message:
+          "The pin slot is too shallow for the retaining clip. Increase the pin thickness.",
       });
     }
   }
 
-  // Watermelon.
-  positive(melon.radius, "watermelon.radius", "Radius");
-  positive(melon.thickness, "watermelon.thickness", "Thickness");
-  positive(melon.rindWidth, "watermelon.rindWidth", "Outer rind width");
-  positive(melon.innerRindWidth, "watermelon.innerRindWidth", "Inner rind width");
-
-  const fleshRadius =
-    melon.radius - melon.rindWidth - melon.innerRindWidth;
+  // The retaining slot and clip must stay inside the red flesh. The straight
+  // side-insertion slot is deliberately allowed to cross the rind.
+  const yFar = derived.pinRecpOffset + derived.slotWidth;
+  const xEnd =
+    pin.length / 2 + (derived.pinRecp.retainerClip?.cavityLength ?? 0);
+  const chord =
+    xEnd < fleshRadius
+      ? Math.sqrt(fleshRadius * fleshRadius - xEnd * xEnd)
+      : 0;
   if (
-    [melon.radius, melon.rindWidth, melon.innerRindWidth].every(Number.isFinite) &&
-    fleshRadius <= 0
+    xEnd >= fleshRadius ||
+    yFar + derived.minColorWall > chord + EPSILON
   ) {
     issues.push({
-      path: "watermelon.rindWidth",
+      path: "watermelon.width",
       message:
-        "Combined rind widths must be smaller than the watermelon radius.",
+        "The retaining slot reaches the white rind. Increase the watermelon width, shorten the pin, or reduce the rind widths.",
     });
   }
 
-  const seedAngle = melon.seedAngle ?? DEFAULT_SEED_ANGLE;
-  if (!Number.isFinite(seedAngle) || seedAngle <= 0 || seedAngle >= 90) {
+  // Seed printability. Seeds scale with the flesh radius.
+  const seedDepth = defaultSeedDepth(thickness);
+  const seedMetrics = seedProfileMetrics(fleshRadius, DEFAULT_SEED_ANGLE);
+  const minimumSeedFeature = 2 * nozzle;
+
+  if (seedMetrics.tipWidth + EPSILON < minimumSeedFeature) {
     issues.push({
-      path: "watermelon.seedAngle",
-      message: "Seed angle must be greater than 0 and less than 90 degrees.",
+      path: "watermelon.width",
+      message: `Seed tips are ${mm(seedMetrics.tipWidth)} wide. A ${mm(nozzle)} nozzle needs at least ${mm(minimumSeedFeature)}. Increase the watermelon width or reduce the rind widths.`,
     });
   }
 
-  const seedDepth = melon.seedDepth ?? defaultSeedDepth(melon.thickness);
-  if (
-    !Number.isFinite(seedDepth) ||
-    seedDepth <= 0 ||
-    (Number.isFinite(melon.thickness) && seedDepth > melon.thickness)
-  ) {
+  const minimumSeedDepth = 3 * layer;
+  if (seedDepth + EPSILON < minimumSeedDepth) {
     issues.push({
-      path: "watermelon.seedDepth",
-      message: "Seed depth must be positive and at most the watermelon thickness.",
+      path: "watermelon.thickness",
+      message: `Seed inserts are ${mm(seedDepth)} deep. A ${mm(layer)} layer height needs at least ${mm(minimumSeedDepth)}. Increase the watermelon thickness.`,
+    });
+  }
+
+  const seedOuterRadius =
+    fleshRadius * SEED_ROW_RADIUS_FRACTION + seedMetrics.maxRadius;
+  if (seedOuterRadius + derived.minColorWall > fleshRadius + EPSILON) {
+    issues.push({
+      path: "watermelon.width",
+      message:
+        "The seeds reach the white rind. Increase the watermelon width or reduce the rind widths.",
+    });
+  }
+
+  // Complex retaining geometry must not touch the seeds. The slot and clip
+  // envelope must be horizontally clear of every seed whose Y range overlaps
+  // the pin slot.
+  const clipLength = derived.pinRecp.retainerClip?.cavityLength ?? 0;
+  const retentionMinX = -pin.length / 2 - clipLength;
+  const retentionMaxX = pin.length / 2 + clipLength;
+
+  for (let index = 0; index < SEED_COUNT; index += 1) {
+    const seed = seedWorldBounds(
+      fleshRadius,
+      DEFAULT_SEED_ANGLE,
+      SEED_START_ANGLE + index * SEED_STEP_ANGLE,
+    );
+
+    const overlapsSlotY =
+      seed.maxY + derived.minSeedWall > derived.pinRecpOffset &&
+      seed.minY - derived.minSeedWall <
+        derived.pinRecpOffset + derived.slotWidth;
+    if (!overlapsSlotY) continue;
+
+    const clearLeft =
+      seed.maxX + derived.minSeedWall <= retentionMinX + EPSILON;
+    const clearRight =
+      seed.minX - derived.minSeedWall >= retentionMaxX - EPSILON;
+    if (!clearLeft && !clearRight) {
+      issues.push({
+        path: "watermelon.width",
+        message:
+          "A seed is too close to the retaining slot or clip. Increase the watermelon width, shorten the pin, or reduce the rind widths.",
+      });
+      break;
+    }
+  }
+
+  // The side insertion slot runs beneath the seed pattern. Keep a printable
+  // wall between the slot ceiling and the seed recess.
+  const sideSlotGap = thickness - seedDepth - derived.slotDepth;
+  if (sideSlotGap + EPSILON < derived.minSeedWall) {
+    issues.push({
+      path: "watermelon.thickness",
+      message: `Only ${mm(sideSlotGap)} remains between the side insertion slot and the seed recess. A minimum of ${mm(derived.minSeedWall)} is required. Increase the watermelon thickness or reduce the pin thickness.`,
+    });
+  }
+
+  // There must be a usable retaining tab region.
+  const minimumTabLength = Math.max(3, 4 * nozzle);
+  if (pin.length - derived.cutoutLength + EPSILON < minimumTabLength) {
+    issues.push({
+      path: "pin.length",
+      message: `Pin is too short for a reliable retaining tab. It must be at least ${mm(derived.cutoutLength + minimumTabLength)}.`,
     });
   }
 
   return issues;
 }
+
+// ---------------------------------------------------------------------------
+// Runtime schema
+// ---------------------------------------------------------------------------
 
 /**
  * The runtime configuration schema. Adding a numeric property here makes it
@@ -455,111 +901,117 @@ export function validateWatermelonModel(
  */
 const definition: ConfigDefinition<WatermelonModelConfig> = {
   defaults: {
-    pinRecp: {
-      base: {
-        length: 22.0,
-        width: 5.5,
-        depth: 0.6,
-      },
-      tabs: {
-        cutoutLength: 4.9,
-        geometry: {
-          width: 0.8,
-          tabHeight: 0.8,
-          bottomSlopeHeight: 0.4,
-        },
-      },
-      retainerClip: {
-        depth: 0.6,
-        protrusion: 0.4,
-        clipThickness: 0.8,
-        cavityLength: 1.6,
-        wallDistance: 0.4,
-      },
-    },
     watermelon: {
+      width: 70,
       // Original arithmetic expression, kept as-is (evaluates to 3).
       thickness: 1 + 0.2 + 0.8 + 0.4 + 0.6,
-      radius: 35,
-      rindWidth: 3,
-      innerRindWidth: 2,
-      pinRecpOffset: 1,
-      seedAngle: DEFAULT_SEED_ANGLE,
+      appearance: {
+        outerRindWidth: 3,
+        innerRindWidth: 2,
+      },
+    },
+    pin: {
+      length: 22,
+      width: 5.5,
+      thickness: 0.6,
+      clearance: 0,
+      retainingClip: true,
+    },
+    printer: {
+      nozzleDiameter: 0.4,
+      layerHeight: 0.2,
+      bottomSlopes: true,
     },
   },
   metadata: {
-    pinRecp: {
-      label: "Pin receptacle",
+    watermelon: {
+      label: "Watermelon",
       fields: {
-        base: {
-          label: "Base",
-          fields: {
-            length: { unit: "mm", step: 0.1 },
-            width: { unit: "mm", step: 0.1 },
-            depth: { unit: "mm", step: 0.1 },
-          },
-        },
-        tabs: {
-          label: "Tabs",
-          fields: {
-            cutoutLength: { label: "Cutout length", unit: "mm", step: 0.1 },
-            geometry: {
-              label: "Tab geometry",
-              fields: {
-                width: { label: "Tab width", unit: "mm", step: 0.1 },
-                tabHeight: {
-                  label: "Tab height",
-                  unit: "mm",
-                  step: 0.1,
-                  description:
-                    "Height of the flat vertical tab face. The lower lead-in slope remains.",
-                },
-                bottomSlopeHeight: {
-                  label: "Bottom slope height",
-                  unit: "mm",
-                  step: 0.1,
-                },
-              },
-            },
-          },
-        },
-        retainerClip: {
-          label: "Retaining clip",
+        width: {
+          label: "Width",
+          unit: "mm",
+          step: 1,
           description:
-            "Optional retaining clip cavity and protrusion in the receptacle.",
-          optional: true,
+            "Overall width across the flat back. The height is half of this value.",
+        },
+        thickness: {
+          label: "Thickness",
+          unit: "mm",
+          step: 0.1,
+        },
+        appearance: {
+          label: "Appearance",
           fields: {
-            depth: { unit: "mm", step: 0.1 },
-            protrusion: { unit: "mm", step: 0.1 },
-            clipThickness: { label: "Clip thickness", unit: "mm", step: 0.1 },
-            cavityLength: { label: "Cavity length", unit: "mm", step: 0.1 },
-            wallDistance: { label: "Wall distance", unit: "mm", step: 0.1 },
+            outerRindWidth: {
+              label: "Outer rind width",
+              unit: "mm",
+              step: 0.1,
+            },
+            innerRindWidth: {
+              label: "Inner rind width",
+              unit: "mm",
+              step: 0.1,
+            },
           },
         },
       },
     },
-    watermelon: {
-      label: "Watermelon",
+    pin: {
+      label: "Brooch pin",
       fields: {
-        thickness: { unit: "mm", step: 0.1 },
-        radius: { unit: "mm", step: 0.5 },
-        rindWidth: { label: "Outer rind width", unit: "mm", step: 0.1 },
-        innerRindWidth: { label: "Inner rind width", unit: "mm", step: 0.1 },
-        pinRecpOffset: { label: "Pin receptacle offset", unit: "mm", step: 0.1 },
-        seedAngle: {
-          label: "Seed angle",
-          unit: "°",
+        length: {
+          label: "Pin length",
+          unit: "mm",
           step: 1,
-          description: "Angle of the seed sides.",
+          description: "Length of the flat pin backing.",
         },
-        seedDepth: {
-          label: "Seed depth",
+        width: {
+          label: "Pin width",
+          unit: "mm",
+          step: 0.1,
+          description: "Width of the flat pin backing.",
+        },
+        thickness: {
+          label: "Pin thickness",
           unit: "mm",
           step: 0.05,
-          optional: true,
+          description: "Thickness of the flat pin backing.",
+        },
+        clearance: {
+          label: "Fit clearance",
+          unit: "mm",
+          step: 0.05,
           description:
-            "Automatic value is 35% of the watermelon thickness. Enable the override to set a fixed depth.",
-          computeDefault: (parent) => defaultSeedDepth(Number(parent.thickness)),
+            "Extra clearance per side. Try 0.1-0.2 mm if the pin is tight.",
+        },
+        retainingClip: {
+          label: "Retaining clip",
+          description:
+            "Adds the rear retaining clip. Its side gaps are derived from the nozzle diameter.",
+        },
+      },
+    },
+    printer: {
+      label: "Printer",
+      fields: {
+        nozzleDiameter: {
+          label: "Nozzle diameter",
+          unit: "mm",
+          step: 0.05,
+          description:
+            "Used to derive minimum feature sizes and the retaining clip gaps.",
+        },
+        layerHeight: {
+          label: "Layer height",
+          unit: "mm",
+          step: 0.05,
+          description:
+            "Used to derive minimum wall thicknesses and the bottom lead-in slope.",
+        },
+        bottomSlopes: {
+          label: "Bottom lead-in slopes",
+          description:
+            "Adds the printable lower slope. Disable it for a more secure pin fit if your printer handles the overhang.",
         },
       },
     },

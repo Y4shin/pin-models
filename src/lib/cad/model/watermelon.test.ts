@@ -14,11 +14,12 @@ import {
 import { buildStlExport, groupPartsByColor } from "../stl";
 import type { ModelPart } from "../types";
 import {
+  deriveGeometry,
+  generateWatermelon,
   pinRecpHeight,
   pinRecpNegative,
   validateWatermelonModel,
   watermelonModel,
-  type PinRecpConfig,
   type WatermelonModelConfig,
 } from "./watermelon";
 
@@ -91,7 +92,7 @@ describe("watermelon Replicad model", () => {
     baseParts = generate(baseConfig);
   });
 
-  it("generates the expected parts from the default configuration", () => {
+  it("generates the expected parts from the simplified default configuration", () => {
     expect(baseParts.map((part) => part.id)).toEqual([
       "flesh",
       "rind-outer",
@@ -120,6 +121,28 @@ describe("watermelon Replicad model", () => {
     const rind = baseParts.find((part) => part.id === "rind-outer")!;
     expect(flesh.shape.boundingBox.width).toBeCloseTo(60, 1);
     expect(rind.shape.boundingBox.width).toBeCloseTo(70, 1);
+    expect(validateWatermelonModel(baseConfig)).toEqual([]);
+  });
+
+  it("derives the original receptacle dimensions from the printer defaults", () => {
+    const derived = deriveGeometry(baseConfig);
+
+    expect(derived.pinRecp.base).toEqual({
+      length: 22,
+      width: 5.5,
+      depth: 0.6,
+    });
+    expect(derived.pinRecp.tabs.geometry.width).toBeCloseTo(0.8);
+    expect(derived.pinRecp.tabs.geometry.tabHeight).toBeCloseTo(0.8);
+    expect(derived.pinRecp.tabs.geometry.bottomSlopeHeight).toBeCloseTo(0.4);
+    expect(derived.pinRecp.retainerClip?.depth).toBeCloseTo(0.6);
+    expect(derived.pinRecp.retainerClip?.protrusion).toBeCloseTo(0.4);
+    expect(derived.pinRecp.retainerClip?.clipThickness).toBeCloseTo(0.8);
+    expect(derived.pinRecp.retainerClip?.cavityLength).toBeCloseTo(1.6);
+    expect(derived.pinRecp.retainerClip?.wallDistance).toBeCloseTo(0.4);
+    expect(derived.cutoutLength).toBeCloseTo(4.9, 6);
+    expect(derived.pinRecpOffset).toBe(1);
+    expect(pinRecpHeight(derived.pinRecp)).toBeCloseTo(2.4);
   });
 
   it("places all five seeds flush with the top of the flesh", () => {
@@ -137,10 +160,10 @@ describe("watermelon Replicad model", () => {
     expect(union.max[0]).toBeGreaterThan(5);
   });
 
-  it("changes the geometry when the watermelon radius changes", () => {
+  it("changes the geometry when the watermelon width changes", () => {
     const larger = generate({
       ...baseConfig,
-      watermelon: { ...baseConfig.watermelon, radius: 40 },
+      watermelon: { ...baseConfig.watermelon, width: 80 },
     });
     const flesh = larger.find((part) => part.id === "flesh")!;
 
@@ -148,32 +171,18 @@ describe("watermelon Replicad model", () => {
     expect(totalVolume(larger)).toBeGreaterThan(totalVolume(baseParts));
   });
 
-  it("changes the geometry when pin receptacle dimensions change", () => {
+  it("changes the geometry when pin dimensions change", () => {
     const wider = generate({
       ...baseConfig,
-      pinRecp: {
-        ...baseConfig.pinRecp,
-        base: { ...baseConfig.pinRecp.base, width: 9 },
-      },
+      pin: { ...baseConfig.pin, width: 9 },
     });
 
     expect(totalVolume(wider)).toBeLessThan(totalVolume(baseParts));
   });
 
   it("uses a flat vertical tab face while keeping the lower slope", () => {
-    const testConfig: PinRecpConfig = {
-      base: { length: 22, width: 5.5, depth: 0.6 },
-      tabs: {
-        cutoutLength: 4.9,
-        geometry: {
-          width: 0.8,
-          tabHeight: 0.8,
-          bottomSlopeHeight: 0.4,
-        },
-      },
-    };
-
-    const negative = pinRecpNegative(testConfig, 0);
+    const derived = deriveGeometry(baseConfig);
+    const negative = pinRecpNegative(derived.pinRecp, 0);
     const widthAt = (z: number) => {
       const slice = negative.intersect(
         makeBox([-100, -0.05, z - 0.005], [100, 0.05, z + 0.005]),
@@ -188,21 +197,154 @@ describe("watermelon Replicad model", () => {
     expect(widthAt(1.1)).toBeLessThan(5.5);
   });
 
+  it("keeps the short side-insertion slot at the opening plane", () => {
+    const derived = deriveGeometry(baseConfig);
+    const negative = pinRecpNegative(derived.pinRecp, derived.extraSpace)
+      .rotate(90)
+      .translateY(derived.pinRecpOffset + derived.pinRecp.base.width / 2);
+
+    const volumeAt = (z: number) => {
+      const slice = negative.intersect(
+        makeBox([-25, 3.7, z - 0.01], [-15, 3.8, z + 0.01]),
+      );
+      return volume(slice);
+    };
+
+    expect(volumeAt(0.03)).toBeGreaterThan(0);
+    expect(volumeAt(1.0)).toBeCloseTo(0, 3);
+  });
+
+  it("disables the bottom lead-in slope when requested", () => {
+    const withoutSlopes: WatermelonModelConfig = {
+      ...baseConfig,
+      printer: { ...baseConfig.printer, bottomSlopes: false },
+    };
+    const derived = deriveGeometry(withoutSlopes);
+
+    expect(derived.bottomSlopeHeight).toBe(0);
+    expect(derived.openingHeight).toBeCloseTo(1.4);
+    expect(derived.receptacleHeight).toBeCloseTo(2.0);
+    expect(validateWatermelonModel(withoutSlopes)).toEqual([]);
+
+    const parts = generate(withoutSlopes);
+    expect(totalVolume(parts)).toBeGreaterThan(totalVolume(baseParts));
+  });
+
+  it("derives tab, slope, and clip dimensions from nozzle and layer height", () => {
+    const largerNozzle: WatermelonModelConfig = {
+      ...baseConfig,
+      printer: { ...baseConfig.printer, nozzleDiameter: 0.6 },
+    };
+    const derived = deriveGeometry(largerNozzle);
+
+    expect(derived.tabWidth).toBeCloseTo(1.2);
+    expect(derived.tabHeight).toBeCloseTo(1.2);
+    expect(derived.bottomSlopeHeight).toBeCloseTo(0.4);
+    expect(derived.clipWallDistance).toBeCloseTo(0.6);
+    expect(derived.pinRecp.retainerClip?.clipThickness).toBeCloseTo(1.2);
+    expect(derived.pinRecp.retainerClip?.cavityLength).toBeCloseTo(1.6);
+
+    // The default 3 mm thickness is no longer enough for a 0.6 mm nozzle.
+    const issues = validateWatermelonModel(largerNozzle);
+    expect(issues.some((issue) => issue.path === "watermelon.thickness")).toBe(true);
+  });
+
+  it("requires a side gap and printable width for the retaining clip", () => {
+    const narrow: WatermelonModelConfig = {
+      ...baseConfig,
+      pin: { ...baseConfig.pin, width: 1.0 },
+    };
+    const issues = validateWatermelonModel(narrow);
+
+    expect(issues.some((issue) => /retaining clip/i.test(issue.message))).toBe(true);
+  });
+
+  it("rejects layer heights larger than the nozzle diameter", () => {
+    const issues = validateWatermelonModel({
+      ...baseConfig,
+      printer: { ...baseConfig.printer, layerHeight: 0.5 },
+    });
+
+    expect(issues).toContainEqual({
+      path: "printer.layerHeight",
+      message: "Layer height must not exceed the nozzle diameter.",
+    });
+  });
+
+  it("rejects seeds that are too small for the nozzle", () => {
+    const small: WatermelonModelConfig = {
+      ...baseConfig,
+      watermelon: { ...baseConfig.watermelon, width: 20 },
+    };
+    const issues = validateWatermelonModel(small);
+
+    expect(issues.some((issue) => /Seed tips/i.test(issue.message))).toBe(true);
+  });
+
+  it("rejects insufficient top wall and seed-to-slot clearance", () => {
+    const thickPin: WatermelonModelConfig = {
+      ...baseConfig,
+      pin: { ...baseConfig.pin, thickness: 1.5 },
+    };
+    const issues = validateWatermelonModel(thickPin);
+
+    expect(issues.some((issue) => /side insertion slot/i.test(issue.message))).toBe(
+      true,
+    );
+    expect(issues.some((issue) => /Thickness must be at least/i.test(issue.message))).toBe(
+      true,
+    );
+  });
+
+  it("rejects seeds that collide with the retaining slot or clip", () => {
+    const small: WatermelonModelConfig = {
+      ...baseConfig,
+      watermelon: { ...baseConfig.watermelon, width: 45 },
+    };
+    const issues = validateWatermelonModel(small);
+
+    expect(issues.some((issue) => /seed is too close/i.test(issue.message))).toBe(
+      true,
+    );
+  });
+
+  it("accepts a larger nozzle when the part and pin are made thicker", () => {
+    const largerNozzle: WatermelonModelConfig = {
+      ...baseConfig,
+      watermelon: { ...baseConfig.watermelon, thickness: 4.1 },
+      pin: { ...baseConfig.pin, thickness: 0.8 },
+      printer: { ...baseConfig.printer, nozzleDiameter: 0.6 },
+    };
+
+    expect(validateWatermelonModel(largerNozzle)).toEqual([]);
+    expect(generate(largerNozzle)).toHaveLength(8);
+  });
+
+  it("rejects a retaining slot that reaches the rind", () => {
+    const small: WatermelonModelConfig = {
+      ...baseConfig,
+      watermelon: { ...baseConfig.watermelon, width: 30 },
+    };
+    const issues = validateWatermelonModel(small);
+
+    expect(issues.some((issue) => /retaining slot reaches/i.test(issue.message))).toBe(
+      true,
+    );
+  });
+
   it("supports disabling the optional retaining clip", () => {
     const withoutClip: WatermelonModelConfig = {
       ...baseConfig,
-      pinRecp: {
-        base: baseConfig.pinRecp.base,
-        tabs: baseConfig.pinRecp.tabs,
-      },
+      pin: { ...baseConfig.pin, retainingClip: false },
     };
+    const derived = deriveGeometry(withoutClip);
+
+    expect(derived.pinRecp.retainerClip).toBeUndefined();
+    expect(pinRecpHeight(derived.pinRecp)).toBeCloseTo(1.8);
 
     const parts = generate(withoutClip);
     expect(parts).toHaveLength(8);
     expect(totalVolume(parts)).toBeGreaterThan(totalVolume(baseParts));
-    expect(pinRecpHeight(withoutClip.pinRecp)).toBeLessThan(
-      pinRecpHeight(baseConfig.pinRecp),
-    );
   });
 
   it("exports one binary STL per color with combined black seeds in one coordinate system", async () => {
@@ -253,19 +395,17 @@ describe("watermelon Replicad model", () => {
   });
 
   it("reports invalid geometry configurations instead of throwing", () => {
-    const invalid = {
+    const invalid: WatermelonModelConfig = {
       ...baseConfig,
-      watermelon: {
-        ...baseConfig.watermelon,
-        radius: 4,
-        rindWidth: 3,
-        innerRindWidth: 2,
-      },
-    } satisfies WatermelonModelConfig;
+      watermelon: { ...baseConfig.watermelon, width: 10 },
+    };
 
     const issues = validateWatermelonModel(invalid);
-    expect(issues.some((issue) => issue.path === "watermelon.rindWidth")).toBe(true);
+    expect(
+      issues.some((issue) => /rind widths leave no red flesh/i.test(issue.message)),
+    ).toBe(true);
 
     expect(() => generate(invalid)).toThrow();
+    expect(() => generateWatermelon(invalid)).toThrow();
   });
 });

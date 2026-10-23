@@ -70,18 +70,69 @@ A numeric property added to the default configuration appears in the UI
 automatically. Metadata is optional; it adds labels, units, bounds, steps,
 descriptions, and optional field behavior.
 
-### Optional and automatic fields
+### Current brooch configuration
 
-- An optional nested object (for example `retainerClip`) stays in the defaults
-  and gets an enable checkbox. Disabling it removes it from the generated config
-  while its values remain in the UI state.
-- An optional number with a calculated default (for example `seedDepth`) is
-  declared in metadata with `computeDefault` and is omitted from the generated
-  config while its override checkbox is off. This keeps the calculation tied to
-  the current values (35% of thickness).
-- A field that exists only in metadata must declare its type implicitly through
-  `computeDefault` or `defaultValue`; TypeScript types are not available at
-  runtime.
+```ts
+watermelon: {
+  width: 70,              // overall width across the flat back
+  thickness: 3,
+  appearance: {
+    outerRindWidth: 3,
+    innerRindWidth: 2,
+  },
+}
+pin: {
+  length: 22,
+  width: 5.5,
+  thickness: 0.6,
+  clearance: 0,           // extra fit clearance per side
+  retainingClip: true,
+}
+printer: {
+  nozzleDiameter: 0.4,
+  layerHeight: 0.2,
+  bottomSlopes: true,     // printable lower lead-in slope
+}
+```
+
+The detailed receptacle geometry is derived from these values in
+`deriveGeometry`:
+
+- Tab width and height: `2 × nozzleDiameter`.
+- Bottom lead-in slope height: `tabWidth × layerHeight / nozzleDiameter`
+  (0.4 mm for the defaults), or 0 when disabled.
+- Retaining-clip side gap: at least one nozzle diameter and two layer heights.
+- Clip thickness: two nozzle diameters. Clip cavity length stays 1.6 mm so it
+  does not grow into the seed pattern.
+- Pin offset from the flat back: derived, at least 1 mm.
+- Seed angle 30°, seed depth 35% of the watermelon thickness.
+- Side-insertion slot height: the pin channel depth only.
+
+### Printer-aware constraints
+
+Validation returns clear errors before geometry is generated. It includes:
+
+- Positive finite dimensions and valid rind widths.
+- A minimum top wall above the pin cavity.
+- Retaining tabs and clip must fit across the pin slot.
+- The retaining clip must have a side gap of at least one nozzle diameter.
+- The retaining slot and clip must stay inside the red flesh. The straight
+  side-insertion slot is intentionally allowed to cross the rind.
+- Seed tips must be at least `2 × nozzleDiameter` wide and seed inserts at least
+  three layers deep.
+- A minimum red wall between the side-insertion slot and the seed recesses.
+- The retaining slot and clip must stay clear of every seed whose Y range
+  overlaps the pin slot.
+- Layer height must not exceed the nozzle diameter.
+
+### Optional and automatic fields (generic feature)
+
+The generic UI still supports optional nested objects and calculated optional
+numbers for other models. An optional nested object gets an enable checkbox and
+retains its values while disabled. A calculated optional number uses metadata
+`computeDefault` and is omitted from the generated config while its override is
+off. A field that exists only in metadata must declare its type implicitly
+through `computeDefault` or `defaultValue`.
 
 ## Export
 
@@ -109,7 +160,10 @@ generated geometry or while validation fails.
   not reflected at runtime.
 - Metadata-only fields need an explicit `defaultValue` or `computeDefault`; a
   field absent from both defaults and metadata is not shown.
-- Validation is intentionally lightweight. Geometry failures are still caught in
-  the worker and reported without discarding the last valid preview.
+- Validation is analytic and printer-aware, but it is not a full print
+  simulation. Geometry failures are still caught in the worker and reported
+  without discarding the last valid preview.
+- The straight side-insertion slot crosses the white/green rind by design. All
+  complex retention and seed features are kept inside the red flesh.
 - Preview tessellation is fixed at 0.08 mm / 0.35 rad tolerance. STL export uses
   finer tessellation (0.02 mm / 0.15 rad).
