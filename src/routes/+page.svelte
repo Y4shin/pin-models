@@ -27,6 +27,7 @@
   let exportError = $state<string | null>(null);
   let exporting = $state(false);
   let workerReady = $state(false);
+  let showDownloadWarning = $state(false);
 
   let client: CadWorkerClient | null = null;
 
@@ -48,9 +49,11 @@
 
   const canDownload = $derived(
     previewParts.length > 0 &&
-      issues.length === 0 &&
       lastGeneratedKey !== null &&
       lastGeneratedKey === configKey,
+  );
+  const showIssuesPane = $derived(
+    issues.length > 0 || generationError !== null || exportError !== null,
   );
 
   const legend = $derived(
@@ -121,9 +124,10 @@
     lastGeneratedKey = null;
     generationError = null;
     exportError = null;
+    showDownloadWarning = false;
   }
 
-  async function handleDownload() {
+  async function performDownload() {
     if (!client || !canDownload || exporting) return;
     exporting = true;
     exportError = null;
@@ -138,17 +142,32 @@
     }
   }
 
+  function handleDownload() {
+    if (!client || !canDownload || exporting) return;
+    if (issues.length > 0) {
+      showDownloadWarning = true;
+      return;
+    }
+    void performDownload();
+  }
+
+  function confirmDownload() {
+    showDownloadWarning = false;
+    void performDownload();
+  }
+
+  function handleKeydown(event: KeyboardEvent) {
+    if (event.key === "Escape" && showDownloadWarning) {
+      showDownloadWarning = false;
+    }
+  }
+
   $effect(() => {
     if (!workerReady || !client) return;
 
     // Read the reactive config values so this effect reruns on every edit.
     const snapshot = $state.snapshot(effectiveConfig) as ConfigObject;
     const key = configKey;
-
-    if (issues.length > 0) {
-      generationError = null;
-      return;
-    }
 
     generationError = null;
     const timer = setTimeout(() => {
@@ -190,6 +209,8 @@
   <title>{model.name} Configurator</title>
 </svelte:head>
 
+<svelte:window onkeydown={handleKeydown} />
+
 <div class="app">
   <aside class="sidebar">
     <header class="sidebar-header">
@@ -218,25 +239,45 @@
         onString={handleString}
         onToggle={handleToggle}
       />
-
-      {#if issues.length > 0}
-        <section class="messages error" aria-live="polite">
-          <h2>Check the configuration</h2>
-          <ul>
-            {#each issues as issue (issue.path + issue.message)}
-              <li>{issue.message}</li>
-            {/each}
-          </ul>
-        </section>
-      {/if}
-
-      {#if exportError}
-        <section class="messages error" aria-live="polite">
-          <h2>Export failed</h2>
-          <p>{exportError}</p>
-        </section>
-      {/if}
     </div>
+
+    {#if showIssuesPane}
+      <aside class="issues-pane" aria-live="polite">
+        {#if issues.length > 0}
+          <section class="messages warning">
+            <h2>Configuration warnings</h2>
+            <ul>
+              {#each issues as issue (issue.path + issue.message)}
+                <li>{issue.message}</li>
+              {/each}
+            </ul>
+            <p class="messages-note">
+              {#if canDownload}
+                The preview and export stay available. Download asks for
+                confirmation while warnings are present.
+              {:else}
+                The preview will update when this configuration can be
+                generated.
+              {/if}
+            </p>
+          </section>
+        {/if}
+
+        {#if generationError}
+          <section class="messages error">
+            <h2>Geometry generation failed</h2>
+            <p>{generationError}</p>
+          </section>
+        {/if}
+
+        {#if exportError}
+          <section class="messages error">
+            <h2>Export failed</h2>
+            <p>{exportError}</p>
+          </section>
+        {/if}
+      </aside>
+    {/if}
 
     <footer class="sidebar-footer">
       <button
@@ -253,12 +294,14 @@
         {/if}
       </button>
       <p class="download-hint">
-        {#if issues.length > 0}
-          Fix the configuration errors to enable export.
+        {#if generationError}
+          Geometry generation failed. Fix the inputs to render this configuration.
         {:else if previewParts.length === 0}
           Waiting for the first model to be generated.
         {:else if lastGeneratedKey !== configKey}
           The preview is updating to match the current values.
+        {:else if issues.length > 0}
+          Warnings are present. Download is available after confirmation.
         {:else}
           ZIP with one binary STL per color, aligned in the same coordinate system.
         {/if}
@@ -274,6 +317,9 @@
         {#if updating}
           <span class="spinner" aria-hidden="true"></span>
           Generating geometry…
+        {:else if generationError}
+          <span class="status-dot error" aria-hidden="true"></span>
+          Generation failed
         {:else}
           <span class="status-dot" aria-hidden="true"></span>
           {previewParts.length > 0 ? "Preview ready" : "Starting CAD engine…"}
@@ -297,16 +343,13 @@
       {/if}
     </div>
 
-    {#if generationError}
-      <div class="viewport-error" role="alert">
-        <strong>Geometry generation failed</strong>
-        <span>{generationError}</span>
-      </div>
-    {/if}
-
     {#if previewParts.length === 0 && !updating}
       <div class="empty-state">
-        <p>Preparing the CAD engine and the default model…</p>
+        <p>
+          {generationError
+            ? "No geometry preview is available for this configuration."
+            : "Preparing the CAD engine and the default model…"}
+        </p>
       </div>
     {/if}
 
@@ -318,6 +361,44 @@
     </div>
   </main>
 </div>
+
+{#if showDownloadWarning}
+  <div class="modal-backdrop">
+    <div
+      class="modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="download-warning-title"
+    >
+      <h2 id="download-warning-title">Download with warnings?</h2>
+      <p>
+        The current configuration does not meet all print constraints. The STL
+        files may not print as intended.
+      </p>
+      <ul class="modal-issues">
+        {#each issues as issue (issue.path + issue.message)}
+          <li>{issue.message}</li>
+        {/each}
+      </ul>
+      <div class="modal-actions">
+        <button
+          type="button"
+          class="modal-button secondary"
+          onclick={() => (showDownloadWarning = false)}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          class="modal-button primary"
+          onclick={confirmDownload}
+        >
+          Download anyway
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   :global(:root) {
@@ -333,6 +414,9 @@
     --accent-hover: #0b5d56;
     --error: #b42318;
     --error-bg: #fef3f2;
+    --warning: #8a4b00;
+    --warning-bg: #fffaeb;
+    --warning-border: #f2c46d;
     --input-bg: #ffffff;
     --input-disabled-bg: #f1f4f6;
 
@@ -442,6 +526,24 @@
     padding: 14px 18px 8px;
   }
 
+  .issues-pane {
+    flex: 0 0 33%;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 12px 18px 14px;
+    border-top: 1px solid var(--border);
+    background: #fffdf8;
+  }
+
+  .issues-pane .messages {
+    margin-top: 0;
+  }
+
+  .issues-pane .messages + .messages {
+    margin-top: 10px;
+  }
+
   .sidebar-footer {
     padding: 14px 18px 18px;
     border-top: 1px solid var(--border-soft);
@@ -509,6 +611,18 @@
     color: #7a271a;
   }
 
+  .messages.warning {
+    border: 1px solid var(--warning-border);
+    background: var(--warning-bg);
+    color: var(--warning);
+  }
+
+  .messages-note {
+    margin-top: 8px !important;
+    color: #8a6a2f;
+    font-size: 0.74rem;
+  }
+
   .messages h2 {
     margin: 0 0 6px;
     font-size: 0.82rem;
@@ -570,6 +684,10 @@
     background: #12b76a;
   }
 
+  .status-dot.error {
+    background: var(--error);
+  }
+
   .legend {
     display: flex;
     flex-wrap: wrap;
@@ -606,25 +724,6 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .viewport-error {
-    position: absolute;
-    top: 62px;
-    left: 50%;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    max-width: min(560px, calc(100% - 40px));
-    padding: 11px 15px;
-    border: 1px solid #f4c7c3;
-    border-radius: 9px;
-    background: rgb(254 243 242 / 96%);
-    color: #7a271a;
-    font-size: 0.8rem;
-    line-height: 1.4;
-    transform: translateX(-50%);
-    box-shadow: 0 6px 20px rgb(15 23 42 / 10%);
-  }
-
   .empty-state {
     position: absolute;
     inset: 0;
@@ -651,6 +750,90 @@
 
   .viewport-bottom .hint {
     text-align: right;
+  }
+
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: rgb(15 23 42 / 45%);
+  }
+
+  .modal {
+    display: flex;
+    flex-direction: column;
+    width: min(540px, 100%);
+    max-height: min(80dvh, 620px);
+    padding: 20px;
+    border-radius: 12px;
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: 0 20px 60px rgb(15 23 42 / 28%);
+  }
+
+  .modal h2 {
+    margin: 0 0 8px;
+    font-size: 1.05rem;
+  }
+
+  .modal p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.84rem;
+    line-height: 1.45;
+  }
+
+  .modal-issues {
+    min-height: 0;
+    max-height: 38dvh;
+    margin: 12px 0 0;
+    padding: 10px 10px 10px 28px;
+    overflow-y: auto;
+    border: 1px solid var(--warning-border);
+    border-radius: 8px;
+    background: var(--warning-bg);
+    color: var(--warning);
+    font-size: 0.8rem;
+    line-height: 1.45;
+  }
+
+  .modal-issues li + li {
+    margin-top: 4px;
+  }
+
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+  }
+
+  .modal-button {
+    padding: 9px 14px;
+    border-radius: 7px;
+    border: 1px solid var(--border);
+    font: inherit;
+    font-size: 0.84rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .modal-button.secondary {
+    background: var(--surface);
+    color: var(--text-muted);
+  }
+
+  .modal-button.primary {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: #ffffff;
+  }
+
+  .modal-button:hover {
+    filter: brightness(0.97);
   }
 
   .spinner {
@@ -711,6 +894,15 @@
 
     .sidebar-scroll {
       overflow: visible;
+    }
+
+    .issues-pane {
+      flex: 0 0 auto;
+      max-height: 32dvh;
+      position: sticky;
+      bottom: 0;
+      z-index: 2;
+      box-shadow: 0 -8px 24px rgb(15 23 42 / 8%);
     }
 
     .sidebar-footer {

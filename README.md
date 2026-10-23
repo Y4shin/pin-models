@@ -127,7 +127,9 @@ The detailed receptacle geometry is derived from these values in
 
 ### Printer-aware constraints
 
-Validation returns clear errors before geometry is generated. It includes:
+Validation reports print-constraint warnings. Invalid configurations are still
+sent to the worker, so the preview and export remain available whenever the
+geometry can be built. Validation includes:
 
 - Positive finite dimensions and valid rind widths.
 - A minimum top wall above the pin cavity.
@@ -167,7 +169,11 @@ watermelon-black.stl   # all five seeds
 All files come from the CAD solids of the last successful generation, use the
 same origin and coordinate system, and are not repositioned. The button is
 disabled while the displayed configuration differs from the last successfully
-generated geometry or while validation fails.
+generated geometry, or when geometry generation fails.
+
+Warnings appear in a fixed, internally scrollable pane in the left sidebar
+above the download button. When warnings are present, download opens a
+confirmation dialog and can still export the current model.
 
 ## Limitations
 
