@@ -197,7 +197,7 @@ describe("watermelon Replicad model", () => {
     expect(widthAt(1.1)).toBeLessThan(5.5);
   });
 
-  it("keeps the short side-insertion slot at the opening plane", () => {
+  it("extends the side-insertion slot to the full cavity height", () => {
     const derived = deriveGeometry(baseConfig);
     const negative = pinRecpNegative(derived.pinRecp, derived.extraSpace)
       .rotate(90)
@@ -211,7 +211,9 @@ describe("watermelon Replicad model", () => {
     };
 
     expect(volumeAt(0.03)).toBeGreaterThan(0);
-    expect(volumeAt(1.0)).toBeCloseTo(0, 3);
+    expect(volumeAt(1.0)).toBeGreaterThan(0);
+    expect(volumeAt(1.7)).toBeGreaterThan(0);
+    expect(volumeAt(1.85)).toBeCloseTo(0, 3);
   });
 
   it("disables the bottom lead-in slope when requested", () => {

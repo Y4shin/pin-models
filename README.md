@@ -122,7 +122,8 @@ The detailed receptacle geometry is derived from these values in
   does not grow into the seed pattern.
 - Pin offset from the flat back: derived, at least 1 mm.
 - Seed angle 30°, seed depth 35% of the watermelon thickness.
-- Side-insertion slot height: the pin channel depth only.
+- Side-entry relief: full cavity height, so the entrance is a smooth
+  continuation of the receptacle instead of a raised ledge.
 
 ### Printer-aware constraints
 
@@ -137,8 +138,8 @@ Validation returns clear errors before geometry is generated. It includes:
 - Seed tips must be at least `2 × nozzleDiameter` wide and seed inserts at least
   three layers deep.
 - At least one printed layer (`layerHeight`) of pure red between every seed
-  recess and every pin cavity: the main slot, the side-entry extension, and the
-  retaining clip.
+  recess and the enclosed pin cavities: the main slot and the retaining clip.
+  The open side-entry relief is exempt, like the rind border cut.
 - Layer height must not exceed the nozzle diameter.
 
 ### Optional and automatic fields (generic feature)

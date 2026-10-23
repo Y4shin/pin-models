@@ -446,14 +446,12 @@ export function pinRecpNegative(config: PinRecpConfig, extraSpace = 0): Shape3D 
     .asShape3D();
 
   if (extraSpace > 0) {
-    // The side insertion slot only needs to pass the pin. Keeping it at the
-    // channel depth avoids cutting into the seed recesses and the rind.
-    // The negative is flipped after construction, so the short extension must
-    // start at the local top to end up at the opening plane after the flip.
+    // Extend the cavity at full height so the side entrance is a smooth
+    // continuation of the receptacle, with no ledge at the opening.
     const extension = drawRectangle(base.width, extraSpace)
       .translate(0, -(base.length + extraSpace) / 2)
-      .sketchOnPlane("XY", openingHeight - base.depth)
-      .extrude(base.depth)
+      .sketchOnPlane("XY")
+      .extrude(openingHeight)
       .asShape3D();
 
     baseBody = baseBody.fuse(extension);
@@ -1020,9 +1018,9 @@ export function validateWatermelonModel(
     });
   }
 
-  // Every pin cavity and every seed recess must be separated by at least one
-  // printed layer of pure red. The boxes cover the main slot, the side-entry
-  // extension, and the retaining-clip cavity.
+  // Every enclosed pin cavity and every seed recess must be separated by at
+  // least one printed layer of pure red. The open side-entry relief is exempt:
+  // it is a straight relief cut that intentionally crosses the rind.
   const slotFarY = derived.pinRecpOffset + derived.slotWidth;
   const cavityBoxes: CavityBox[] = [
     {
@@ -1034,17 +1032,6 @@ export function validateWatermelonModel(
       maxZ: derived.openingHeight,
     },
   ];
-
-  if (derived.extraSpace > 0) {
-    cavityBoxes.push({
-      minX: -pin.length / 2 - derived.extraSpace,
-      maxX: -pin.length / 2,
-      minY: derived.pinRecpOffset,
-      maxY: slotFarY,
-      minZ: 0,
-      maxZ: derived.slotDepth,
-    });
-  }
 
   if (derived.pinRecp.retainerClip) {
     const clipLength = derived.pinRecp.retainerClip.cavityLength;
