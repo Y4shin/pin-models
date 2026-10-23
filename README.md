@@ -17,6 +17,18 @@ npm run preview  # serve the production build
 The production build is a static site (`@sveltejs/adapter-static`). No backend
 or CAD service is required.
 
+## Deployment
+
+Pushes to `main` run `.github/workflows/deploy-pages.yml`. The workflow installs
+dependencies, runs the checks and tests, builds the static site, and deploys it
+to GitHub Pages:
+
+https://y4shin.github.io/pin-models/
+
+The GitHub Pages source is **GitHub Actions**. The workflow sets
+`BASE_PATH=/<repository>` for the project-site URL. Local builds leave
+`BASE_PATH` unset and use the site root.
+
 ## Architecture
 
 ```text
