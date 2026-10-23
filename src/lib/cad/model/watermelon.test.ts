@@ -119,8 +119,8 @@ describe("watermelon Replicad model", () => {
 
     const flesh = baseParts.find((part) => part.id === "flesh")!;
     const rind = baseParts.find((part) => part.id === "rind-outer")!;
-    expect(flesh.shape.boundingBox.width).toBeCloseTo(60, 1);
-    expect(rind.shape.boundingBox.width).toBeCloseTo(70, 1);
+    expect(flesh.shape.boundingBox.width).toBeCloseTo(31, 1);
+    expect(rind.shape.boundingBox.width).toBeCloseTo(35, 1);
     expect(validateWatermelonModel(baseConfig)).toEqual([]);
   });
 
@@ -167,7 +167,7 @@ describe("watermelon Replicad model", () => {
     });
     const flesh = larger.find((part) => part.id === "flesh")!;
 
-    expect(flesh.shape.boundingBox.width).toBeCloseTo(70, 1);
+    expect(flesh.shape.boundingBox.width).toBeCloseTo(76, 1);
     expect(totalVolume(larger)).toBeGreaterThan(totalVolume(baseParts));
   });
 
@@ -276,7 +276,7 @@ describe("watermelon Replicad model", () => {
   it("rejects seeds that are too small for the nozzle", () => {
     const small: WatermelonModelConfig = {
       ...baseConfig,
-      watermelon: { ...baseConfig.watermelon, width: 20 },
+      watermelon: { ...baseConfig.watermelon, width: 12 },
     };
     const issues = validateWatermelonModel(small);
 
@@ -286,7 +286,7 @@ describe("watermelon Replicad model", () => {
   it("rejects a pin that is too thick for the top wall", () => {
     const thickPin: WatermelonModelConfig = {
       ...baseConfig,
-      pin: { ...baseConfig.pin, thickness: 1.5 },
+      pin: { ...baseConfig.pin, thickness: 2.0 },
     };
     const issues = validateWatermelonModel(thickPin);
 
@@ -298,29 +298,29 @@ describe("watermelon Replicad model", () => {
   it("requires one printed layer of red between a seed and the pin cavity", () => {
     const small: WatermelonModelConfig = {
       ...baseConfig,
-      watermelon: { ...baseConfig.watermelon, width: 45 },
+      watermelon: {
+        ...baseConfig.watermelon,
+        width: 45,
+        thickness: 3,
+      },
     };
     const issues = validateWatermelonModel(small);
 
     expect(
       issues.some(
         (issue) =>
-          /Seed 1 leaves only/i.test(issue.message) &&
-          /one printed layer/i.test(issue.message),
+          /too close to the pin cavity/i.test(issue.message) &&
+          /at least 4 mm/i.test(issue.message),
       ),
     ).toBe(true);
 
-    const safe: WatermelonModelConfig = {
-      ...baseConfig,
-      watermelon: { ...baseConfig.watermelon, width: 66 },
-    };
-    expect(validateWatermelonModel(safe)).toEqual([]);
+    expect(validateWatermelonModel(baseConfig)).toEqual([]);
   });
 
   it("accepts a larger nozzle when the part and pin are made thicker", () => {
     const largerNozzle: WatermelonModelConfig = {
       ...baseConfig,
-      watermelon: { ...baseConfig.watermelon, thickness: 4.1 },
+      watermelon: { ...baseConfig.watermelon, thickness: 5.3 },
       pin: { ...baseConfig.pin, thickness: 0.8 },
       printer: { ...baseConfig.printer, nozzleDiameter: 0.6 },
     };
@@ -406,7 +406,7 @@ describe("watermelon Replicad model", () => {
   it("reports invalid geometry configurations instead of throwing", () => {
     const invalid: WatermelonModelConfig = {
       ...baseConfig,
-      watermelon: { ...baseConfig.watermelon, width: 10 },
+      watermelon: { ...baseConfig.watermelon, width: 3 },
     };
 
     const issues = validateWatermelonModel(invalid);

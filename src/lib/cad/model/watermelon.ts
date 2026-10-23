@@ -100,7 +100,7 @@ export type WatermelonGeometryConfig = {
 
 export const DEFAULT_SEED_ANGLE = 30;
 const SEED_DEPTH_FRACTION = 0.35;
-const SEED_ROW_RADIUS_FRACTION = 0.66;
+const SEED_ROW_RADIUS_FRACTION = 0.5;
 const SEED_COUNT = 5;
 const SEED_START_ANGLE = 18;
 const SEED_STEP_ANGLE = 36;
@@ -684,6 +684,10 @@ function mm(value: number): string {
   return `${Number(value.toFixed(2))} mm`;
 }
 
+function ceilMm(value: number): string {
+  return `${Math.ceil(value * 100 - 1e-9) / 100} mm`;
+}
+
 type CavityBox = {
   minX: number;
   maxX: number;
@@ -839,17 +843,6 @@ function polygonRectDistance(points: Point2[], box: CavityBox): number {
   return minimum;
 }
 
-/** 3D clearance between a seed recess and one cavity box. */
-function seedCavityGap(
-  seed: Point2[],
-  seedMinZ: number,
-  seedMaxZ: number,
-  box: CavityBox,
-): number {
-  const verticalGap = Math.max(box.minZ - seedMaxZ, seedMinZ - box.maxZ, 0);
-  const lateral = polygonRectDistance(seed, box);
-  return verticalGap > 0 ? Math.hypot(lateral, verticalGap) : lateral;
-}
 
 export function validateWatermelonModel(
   config: WatermelonModelConfig,
@@ -912,8 +905,7 @@ export function validateWatermelonModel(
   if (fleshRadius <= EPSILON) {
     issues.push({
       path: "watermelon.appearance.outerRindWidth",
-      message:
-        "The rind widths leave no red flesh. Reduce a rind width or increase the watermelon width.",
+      message: `The rind widths leave no red flesh. Increase the watermelon width to more than ${ceilMm(2 * (outerRind + innerRind))} or reduce a rind width.`,
     });
     return issues;
   }
@@ -960,10 +952,11 @@ export function validateWatermelonModel(
 
     const clip = derived.pinRecp.retainerClip!;
     if (derived.slotDepth + EPSILON < clip.protrusion + layer) {
+      const requiredPinThickness =
+        clip.protrusion + layer - 2 * pin.clearance;
       issues.push({
         path: "pin.thickness",
-        message:
-          "The pin slot is too shallow for the retaining clip. Increase the pin thickness.",
+        message: `The pin slot is too shallow for the retaining clip. Increase the pin thickness to at least ${ceilMm(Math.max(0, requiredPinThickness))}.`,
       });
     }
   }
@@ -981,10 +974,15 @@ export function validateWatermelonModel(
     xEnd >= fleshRadius ||
     yFar + derived.minColorWall > chord + EPSILON
   ) {
+    const requiredFleshRadius = Math.hypot(
+      xEnd,
+      yFar + derived.minColorWall,
+    );
+    const requiredWidth =
+      2 * (requiredFleshRadius + outerRind + innerRind);
     issues.push({
       path: "watermelon.width",
-      message:
-        "The retaining slot reaches the white rind. Increase the watermelon width, shorten the pin, or reduce the rind widths.",
+      message: `The retaining slot reaches the white rind. Increase the watermelon width to at least ${ceilMm(requiredWidth)} or reduce the rind widths.`,
     });
   }
 
@@ -994,9 +992,13 @@ export function validateWatermelonModel(
   const minimumSeedFeature = 2 * nozzle;
 
   if (seedMetrics.tipWidth + EPSILON < minimumSeedFeature) {
+    const requiredFleshRadius =
+      fleshRadius * (minimumSeedFeature / seedMetrics.tipWidth);
+    const requiredWidth =
+      2 * (requiredFleshRadius + outerRind + innerRind);
     issues.push({
       path: "watermelon.width",
-      message: `Seed tips are ${mm(seedMetrics.tipWidth)} wide. A ${mm(nozzle)} nozzle needs at least ${mm(minimumSeedFeature)}. Increase the watermelon width or reduce the rind widths.`,
+      message: `Seed tips are ${mm(seedMetrics.tipWidth)} wide. A ${mm(nozzle)} nozzle needs at least ${mm(minimumSeedFeature)}. Increase the watermelon width to at least ${ceilMm(requiredWidth)} or reduce the rind widths.`,
     });
   }
 
@@ -1011,10 +1013,21 @@ export function validateWatermelonModel(
   const seedOuterRadius =
     fleshRadius * SEED_ROW_RADIUS_FRACTION + seedMetrics.maxRadius;
   if (seedOuterRadius + derived.minColorWall > fleshRadius + EPSILON) {
+    const radialFactor =
+      SEED_ROW_RADIUS_FRACTION + seedMetrics.maxRadius / fleshRadius;
+    const requiredWidth =
+      radialFactor < 1
+        ? 2 *
+          (derived.minColorWall / (1 - radialFactor) +
+            outerRind +
+            innerRind)
+        : null;
     issues.push({
       path: "watermelon.width",
       message:
-        "The seeds reach the white rind. Increase the watermelon width or reduce the rind widths.",
+        requiredWidth === null
+          ? "The seeds reach the white rind. Reduce the seed size or the rind widths."
+          : `The seeds reach the white rind. Increase the watermelon width to at least ${ceilMm(requiredWidth)} or reduce the rind widths.`,
     });
   }
 
@@ -1045,6 +1058,9 @@ export function validateWatermelonModel(
     });
   }
 
+  const failingSeeds: number[] = [];
+  let requiredThickness = thickness;
+
   for (let index = 0; index < SEED_COUNT; index += 1) {
     const points = seedWorldPolygon(
       fleshRadius,
@@ -1054,18 +1070,45 @@ export function validateWatermelonModel(
     const seedBottom = thickness - seedDepth;
     let minimumGap = Infinity;
     for (const box of cavityBoxes) {
-      minimumGap = Math.min(
-        minimumGap,
-        seedCavityGap(points, seedBottom, thickness, box),
+      const lateral = polygonRectDistance(points, box);
+      const verticalGap = Math.max(
+        box.minZ - thickness,
+        seedBottom - box.maxZ,
+        0,
       );
+      const gap =
+        verticalGap > 0 ? Math.hypot(lateral, verticalGap) : lateral;
+      minimumGap = Math.min(minimumGap, gap);
+
+      if (lateral < derived.minRedWall) {
+        const requiredVertical = Math.sqrt(
+          Math.max(0, derived.minRedWall ** 2 - lateral ** 2),
+        );
+        const requiredBottom = box.maxZ + requiredVertical;
+        requiredThickness = Math.max(
+          requiredThickness,
+          requiredBottom / (1 - SEED_DEPTH_FRACTION),
+        );
+      }
     }
+
     if (minimumGap + EPSILON < derived.minRedWall) {
-      issues.push({
-        path: "watermelon.width",
-        message: `Seed ${index + 1} leaves only ${mm(Math.max(0, minimumGap))} of red to the pin cavity. Leave at least ${mm(derived.minRedWall)} (one printed layer). Increase the watermelon width, shorten the pin, or reduce the rind widths.`,
-      });
-      break;
+      failingSeeds.push(index + 1);
     }
+  }
+
+  if (failingSeeds.length > 0) {
+    const last = failingSeeds[failingSeeds.length - 1];
+    const list =
+      failingSeeds.length === 1
+        ? `${last}`
+        : `${failingSeeds.slice(0, -1).join(", ")}${failingSeeds.length === 2 ? " and " : ", and "}${last}`;
+    const label =
+      failingSeeds.length === 1 ? `Seed ${list}` : `Seeds ${list}`;
+    issues.push({
+      path: "watermelon.thickness",
+      message: `${label} ${failingSeeds.length === 1 ? "is" : "are"} too close to the pin cavity. Increase the watermelon thickness to at least ${ceilMm(requiredThickness)} to leave ${mm(derived.minRedWall)} of red.`,
+    });
   }
 
   // There must be a usable retaining tab region.
@@ -1091,12 +1134,13 @@ export function validateWatermelonModel(
 const definition: ConfigDefinition<WatermelonModelConfig> = {
   defaults: {
     watermelon: {
-      width: 70,
-      // Original arithmetic expression, kept as-is (evaluates to 3).
-      thickness: 1 + 0.2 + 0.8 + 0.4 + 0.6,
+      width: 35,
+      // Centering the seeds at this width needs 4 mm to keep one layer of red
+      // between the seed recesses and the retaining clip.
+      thickness: 4,
       appearance: {
-        outerRindWidth: 3,
-        innerRindWidth: 2,
+        outerRindWidth: 1.2,
+        innerRindWidth: 0.8,
       },
     },
     pin: {

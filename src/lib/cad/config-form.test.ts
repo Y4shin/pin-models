@@ -52,11 +52,11 @@ describe("generic configuration UI", () => {
     const config = buildEffectiveConfig(watermelonModel.definition, state);
 
     expect(config.watermelon).toEqual({
-      width: 70,
-      thickness: 3,
+      width: 35,
+      thickness: 4,
       appearance: {
-        outerRindWidth: 3,
-        innerRindWidth: 2,
+        outerRindWidth: 1.2,
+        innerRindWidth: 0.8,
       },
     });
     expect(config.pin).toEqual({

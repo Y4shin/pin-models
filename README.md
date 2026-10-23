@@ -90,11 +90,11 @@ descriptions, and optional field behavior.
 
 ```ts
 watermelon: {
-  width: 70,              // overall width across the flat back
-  thickness: 3,
+  width: 35,              // overall width across the flat back
+  thickness: 4,
   appearance: {
-    outerRindWidth: 3,
-    innerRindWidth: 2,
+    outerRindWidth: 1.2,
+    innerRindWidth: 0.8,
   },
 }
 pin: {
@@ -122,6 +122,9 @@ The detailed receptacle geometry is derived from these values in
   does not grow into the seed pattern.
 - Pin offset from the flat back: derived, at least 1 mm.
 - Seed angle 30°, seed depth 35% of the watermelon thickness.
+- Seed row radius: 50% of the red-flesh radius, so the red distance from the
+  semicircle center to the seed equals the distance from the seed to the inner
+  rind along the same radial line.
 - Side-entry relief: full cavity height, so the entrance is a smooth
   continuation of the receptacle instead of a raised ledge.
 
