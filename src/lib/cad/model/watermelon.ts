@@ -21,6 +21,8 @@ export type WatermelonConfig = {
   /** Overall width across the flat back. Height is half of this value. */
   width: number;
   thickness: number;
+  /** Seed-centre radial position as a percentage of the red-flesh radius. */
+  seedPlacement: number;
   appearance: {
     outerRindWidth: number;
     innerRindWidth: number;
@@ -92,6 +94,7 @@ export type WatermelonGeometryConfig = {
   innerRindWidth: number;
   seedAngle?: number;
   seedDepth?: number;
+  seedRowFraction?: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -100,7 +103,9 @@ export type WatermelonGeometryConfig = {
 
 export const DEFAULT_SEED_ANGLE = 30;
 const SEED_DEPTH_FRACTION = 0.35;
-const SEED_ROW_RADIUS_FRACTION = 0.5;
+// Seed centres sit at 60% of the red-flesh radius: a 60/40 split between the
+// red section from the centre and the section to the inner rind.
+const SEED_ROW_RADIUS_FRACTION = 0.6;
 const SEED_COUNT = 5;
 const SEED_START_ANGLE = 18;
 const SEED_STEP_ANGLE = 36;
@@ -310,6 +315,7 @@ export interface DerivedGeometry {
   radius: number;
   seedAngle: number;
   seedDepth: number;
+  seedRowFraction: number;
   pinRecp: PinRecpConfig;
   pinRecpOffset: number;
   extraSpace: number;
@@ -394,6 +400,10 @@ export function deriveGeometry(config: WatermelonModelConfig): DerivedGeometry {
     radius: watermelon.width / 2,
     seedAngle: DEFAULT_SEED_ANGLE,
     seedDepth: defaultSeedDepth(watermelon.thickness),
+    seedRowFraction:
+      (Number.isFinite(watermelon.seedPlacement)
+        ? watermelon.seedPlacement
+        : 60) / 100,
     pinRecp,
     pinRecpOffset,
     extraSpace: watermelon.width / 2,
@@ -547,6 +557,7 @@ export function watermelon(config: WatermelonGeometryConfig): ModelPart[] {
     innerRindWidth,
     seedAngle = DEFAULT_SEED_ANGLE,
     seedDepth = defaultSeedDepth(thickness),
+    seedRowFraction = SEED_ROW_RADIUS_FRACTION,
   } = config;
 
   const fleshRadius = radius - rindWidth - innerRindWidth;
@@ -568,6 +579,10 @@ export function watermelon(config: WatermelonGeometryConfig): ModelPart[] {
 
   if (!Number.isFinite(seedDepth) || seedDepth <= 0 || seedDepth > thickness) {
     throw new RangeError("seedDepth must be positive and at most thickness.");
+  }
+
+  if (!Number.isFinite(seedRowFraction) || seedRowFraction <= 0) {
+    throw new RangeError("seedRowFraction must be a positive number.");
   }
 
   function createSeedProfile(): Drawing {
@@ -607,7 +622,7 @@ export function watermelon(config: WatermelonGeometryConfig): ModelPart[] {
   let fleshBody = extrudeBody(halfDisc(fleshRadius), thickness);
 
   const seedProfile = createSeedProfile();
-  const rowRadius = fleshRadius * SEED_ROW_RADIUS_FRACTION;
+  const rowRadius = fleshRadius * seedRowFraction;
   const epsilon = thickness * 0.001;
   const seedBodies: ModelPart[] = [];
 
@@ -668,6 +683,7 @@ export function generateWatermelon(config: WatermelonModelConfig): ModelPart[] {
     innerRindWidth: config.watermelon.appearance.innerRindWidth,
     seedAngle: derived.seedAngle,
     seedDepth: derived.seedDepth,
+    seedRowFraction: derived.seedRowFraction,
   }).map((part) => ({
     ...part,
     shape: part.shape.cut(negative),
@@ -890,6 +906,18 @@ export function validateWatermelonModel(
   positive(nozzle, "printer.nozzleDiameter", "Nozzle diameter");
   positive(layer, "printer.layerHeight", "Layer height");
 
+  if (
+    !Number.isFinite(watermelon.seedPlacement) ||
+    watermelon.seedPlacement < 20 ||
+    watermelon.seedPlacement > 80
+  ) {
+    issues.push({
+      path: "watermelon.seedPlacement",
+      message: "Seed placement must be between 20% and 80%.",
+    });
+    basicsValid = false;
+  }
+
   if (!basicsValid) return issues;
 
   if (layer > nozzle + EPSILON) {
@@ -1011,10 +1039,10 @@ export function validateWatermelonModel(
   }
 
   const seedOuterRadius =
-    fleshRadius * SEED_ROW_RADIUS_FRACTION + seedMetrics.maxRadius;
+    fleshRadius * derived.seedRowFraction + seedMetrics.maxRadius;
   if (seedOuterRadius + derived.minColorWall > fleshRadius + EPSILON) {
     const radialFactor =
-      SEED_ROW_RADIUS_FRACTION + seedMetrics.maxRadius / fleshRadius;
+      derived.seedRowFraction + seedMetrics.maxRadius / fleshRadius;
     const requiredWidth =
       radialFactor < 1
         ? 2 *
@@ -1066,6 +1094,7 @@ export function validateWatermelonModel(
       fleshRadius,
       DEFAULT_SEED_ANGLE,
       SEED_START_ANGLE + index * SEED_STEP_ANGLE,
+      derived.seedRowFraction,
     );
     const seedBottom = thickness - seedDepth;
     let minimumGap = Infinity;
@@ -1138,6 +1167,7 @@ const definition: ConfigDefinition<WatermelonModelConfig> = {
       // Centering the seeds at this width needs 4 mm to keep one layer of red
       // between the seed recesses and the retaining clip.
       thickness: 4,
+      seedPlacement: 60,
       appearance: {
         outerRindWidth: 1.2,
         innerRindWidth: 0.8,
@@ -1171,6 +1201,16 @@ const definition: ConfigDefinition<WatermelonModelConfig> = {
           label: "Thickness",
           unit: "mm",
           step: 0.1,
+        },
+        seedPlacement: {
+          label: "Seed placement",
+          unit: "%",
+          min: 20,
+          max: 80,
+          step: 1,
+          control: "slider",
+          description:
+            "Radial seed position in the red flesh: 60% inner / 40% outer at the default.",
         },
         appearance: {
           label: "Appearance",

@@ -23,6 +23,7 @@ describe("generic configuration UI", () => {
 
     expect(paths).toContain("watermelon.width");
     expect(paths).toContain("watermelon.thickness");
+    expect(paths).toContain("watermelon.seedPlacement");
     expect(paths).toContain("watermelon.appearance.outerRindWidth");
     expect(paths).toContain("watermelon.appearance.innerRindWidth");
     expect(paths).toContain("pin.length");
@@ -37,6 +38,18 @@ describe("generic configuration UI", () => {
     expect(paths).not.toContain("watermelon.radius");
     expect(paths).not.toContain("watermelon.seedAngle");
     expect(paths).not.toContain("pinRecp.base.width");
+
+    const seedPlacement = nodes.find(
+      (node) => node.path === "watermelon.seedPlacement",
+    );
+    expect(seedPlacement?.kind).toBe("number");
+    if (seedPlacement?.kind === "number") {
+      expect(seedPlacement.control).toBe("slider");
+      expect(seedPlacement.min).toBe(20);
+      expect(seedPlacement.max).toBe(80);
+      expect(seedPlacement.step).toBe(1);
+      expect(seedPlacement.value).toBe(60);
+    }
 
     const clip = nodes.find((node) => node.path === "pin.retainingClip");
     expect(clip?.kind).toBe("boolean");
@@ -54,6 +67,7 @@ describe("generic configuration UI", () => {
     expect(config.watermelon).toEqual({
       width: 35,
       thickness: 4,
+      seedPlacement: 60,
       appearance: {
         outerRindWidth: 1.2,
         innerRindWidth: 0.8,

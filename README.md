@@ -84,7 +84,7 @@ the pin cavity stay readable without flattening the model.
 
 A numeric property added to the default configuration appears in the UI
 automatically. Metadata is optional; it adds labels, units, bounds, steps,
-descriptions, and optional field behavior.
+slider controls, descriptions, and optional field behavior.
 
 ### Current brooch configuration
 
@@ -92,6 +92,7 @@ descriptions, and optional field behavior.
 watermelon: {
   width: 35,              // overall width across the flat back
   thickness: 4,
+  seedPlacement: 60,      // seed centre, % of the red-flesh radius
   appearance: {
     outerRindWidth: 1.2,
     innerRindWidth: 0.8,
@@ -122,9 +123,9 @@ The detailed receptacle geometry is derived from these values in
   does not grow into the seed pattern.
 - Pin offset from the flat back: derived, at least 1 mm.
 - Seed angle 30°, seed depth 35% of the watermelon thickness.
-- Seed row radius: 50% of the red-flesh radius, so the red distance from the
-  semicircle center to the seed equals the distance from the seed to the inner
-  rind along the same radial line.
+- Seed placement: configurable from 20% to 80% of the red-flesh radius. The
+  default 60% puts 60% of the radial red body inside the seed centre and 40%
+  outside it.
 - Side-entry relief: full cavity height, so the entrance is a smooth
   continuation of the receptacle instead of a raised ledge.
 

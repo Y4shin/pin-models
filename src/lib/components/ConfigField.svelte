@@ -91,18 +91,37 @@
       {/if}
     </div>
 
-    <input
-      id={inputId}
-      class="number-input"
-      type="number"
-      inputmode="decimal"
-      step={node.step ?? "any"}
-      min={node.min}
-      max={node.max}
-      value={displayValue}
-      disabled={automatic}
-      oninput={(event) => onNumber(node.path, event.currentTarget.value)}
-    />
+    {#if node.control === "slider"}
+      <div class="range-row">
+        <input
+          id={inputId}
+          class="range-input"
+          type="range"
+          step={node.step ?? 1}
+          min={node.min ?? 0}
+          max={node.max ?? 100}
+          value={displayValue}
+          disabled={automatic}
+          oninput={(event) => onNumber(node.path, event.currentTarget.value)}
+        />
+        <output class="range-value" for={inputId}>
+          {displayValue}{node.unit ? `${node.unit}` : ""}
+        </output>
+      </div>
+    {:else}
+      <input
+        id={inputId}
+        class="number-input"
+        type="number"
+        inputmode="decimal"
+        step={node.step ?? "any"}
+        min={node.min}
+        max={node.max}
+        value={displayValue}
+        disabled={automatic}
+        oninput={(event) => onNumber(node.path, event.currentTarget.value)}
+      />
+    {/if}
 
     {#if automatic}
       <p class="hint">
@@ -220,8 +239,30 @@
     font-size: 0.9rem;
   }
 
+  .range-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .range-input {
+    flex: 1;
+    min-width: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+
+  .range-value {
+    min-width: 3.6em;
+    color: var(--text-muted);
+    font-size: 0.84rem;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+
   .number-input:focus,
-  .text-input:focus {
+  .text-input:focus,
+  .range-input:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
     border-color: transparent;

@@ -145,6 +145,36 @@ describe("watermelon Replicad model", () => {
     expect(pinRecpHeight(derived.pinRecp)).toBeCloseTo(2.4);
   });
 
+  it("moves the seeds with the seed placement percentage", () => {
+    const inner = generate({
+      ...baseConfig,
+      watermelon: { ...baseConfig.watermelon, seedPlacement: 40 },
+    });
+    const outer = generate({
+      ...baseConfig,
+      watermelon: { ...baseConfig.watermelon, seedPlacement: 60 },
+    });
+    const seedY = (parts: ModelPart[]) => {
+      const seed = parts.find((part) => part.id === "seed-3")!;
+      const [, max] = seed.shape.boundingBox.bounds;
+      const [min] = seed.shape.boundingBox.bounds;
+      return (min[1] + max[1]) / 2;
+    };
+
+    expect(seedY(outer)).toBeGreaterThan(seedY(inner));
+    expect(deriveGeometry(baseConfig).seedRowFraction).toBeCloseTo(0.6, 6);
+
+    const outsideRange = validateWatermelonModel({
+      ...baseConfig,
+      watermelon: { ...baseConfig.watermelon, seedPlacement: 90 },
+    });
+    expect(
+      outsideRange.some(
+        (issue) => issue.path === "watermelon.seedPlacement",
+      ),
+    ).toBe(true);
+  });
+
   it("places all five seeds flush with the top of the flesh", () => {
     const seeds = baseParts.filter((part) => part.color === "black");
     expect(seeds).toHaveLength(5);

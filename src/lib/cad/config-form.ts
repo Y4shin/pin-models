@@ -57,6 +57,7 @@ export interface ExportedField {
   min?: number;
   max?: number;
   step?: number;
+  control?: "number" | "slider";
   optional: boolean;
 }
 
@@ -94,6 +95,7 @@ export function describeNumericFields(definition: ConfigDefinition): ExportedFie
         min: meta?.min,
         max: meta?.max,
         step: meta?.step,
+        control: meta?.control,
         optional: meta?.optional === true || !(isPlainObject(defaults) && key in defaults),
       });
     }
@@ -223,6 +225,7 @@ function buildNodes(
         ...common,
         kind: "number",
         value: typeof value === "boolean" ? Number(value) : value,
+        control: meta?.control ?? "number",
         min: meta?.min,
         max: meta?.max,
         step: meta?.step,

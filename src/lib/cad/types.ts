@@ -32,6 +32,8 @@ export interface FieldMetadata {
   max?: number;
   /** Step for numeric inputs. Defaults to "any". */
   step?: number;
+  /** Optional control hint for numeric fields. */
+  control?: "number" | "slider";
   /**
    * Marks an object or number as optional. Optional objects get an
    * enable/disable checkbox. Optional numbers get an override checkbox and are
@@ -112,6 +114,7 @@ export interface FormGroupNode extends FormNodeBase {
 export interface FormNumberNode extends FormNodeBase {
   kind: "number";
   value: number | string;
+  control: "number" | "slider";
   min?: number;
   max?: number;
   step?: number;
