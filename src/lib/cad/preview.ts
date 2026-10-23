@@ -13,6 +13,7 @@ export interface PreviewPart {
 export interface GenerateRequest {
   kind: "generate";
   requestId: number;
+  modelId: string;
   configKey: string;
   config: ConfigObject;
 }

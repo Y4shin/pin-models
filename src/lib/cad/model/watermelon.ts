@@ -559,6 +559,7 @@ const definition: ConfigDefinition<WatermelonModelConfig> = {
 };
 
 export const watermelonModel: ParametricModel<WatermelonModelConfig> = {
+  id: "watermelon",
   name: "Watermelon",
   definition,
   generate: generateWatermelon,

@@ -21,7 +21,22 @@
   let resizeObserver: ResizeObserver | null = null;
 
   let lastDiagonal = 0;
+  let frameId: number | null = null;
   const lastCenter = new THREE.Vector3();
+
+  // Render on demand instead of running a continuous animation loop. This keeps
+  // an idle viewer from consuming CPU/GPU time.
+  function scheduleRender() {
+    if (!renderer || !scene || !camera || !controls) return;
+    if (frameId !== null) return;
+    frameId = requestAnimationFrame(() => {
+      frameId = null;
+      if (!renderer || !scene || !camera || !controls) return;
+      const damping = controls.update();
+      renderer.render(scene, camera);
+      if (damping) scheduleRender();
+    });
+  }
 
   function disposeModel() {
     if (!modelGroup) return;
@@ -68,6 +83,7 @@
     }
 
     frameModel(false);
+    scheduleRender();
   }
 
   function frameModel(force: boolean) {
@@ -164,6 +180,7 @@
     controls.screenSpacePanning = true;
     controls.zoomSpeed = 0.9;
     controls.target.set(0, 0, 0);
+    controls.addEventListener("change", scheduleRender);
 
     scene.add(new THREE.HemisphereLight(0xffffff, 0x7a8595, 2.1));
     scene.add(new THREE.AmbientLight(0xffffff, 0.55));
@@ -190,24 +207,24 @@
       renderer.setSize(width, height, false);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
+      scheduleRender();
     };
 
     resizeObserver = new ResizeObserver(resize);
     resizeObserver.observe(element);
 
-    renderer.setAnimationLoop(() => {
-      if (!renderer || !scene || !camera || !controls) return;
-      controls.update();
-      renderer.render(scene, camera);
-    });
-
+    scheduleRender();
     ready = true;
 
     return () => {
       ready = false;
       resizeObserver?.disconnect();
       resizeObserver = null;
-      renderer?.setAnimationLoop(null);
+      if (frameId !== null) {
+        cancelAnimationFrame(frameId);
+        frameId = null;
+      }
+      controls?.removeEventListener("change", scheduleRender);
       disposeModel();
       controls?.dispose();
       controls = null;

@@ -15,16 +15,11 @@
   import type { ConfigObject, FormNode } from "../lib/cad/types";
   import type { PreviewPart } from "../lib/cad/preview";
   import { CadWorkerClient } from "../lib/cad/worker-client";
-  import {
-    watermelonModel,
-    type WatermelonModelConfig,
-  } from "../lib/cad/model/watermelon";
+  import { defaultModel, findModel, models } from "../lib/cad/models";
 
-  const model = watermelonModel;
-  const initialState = createFormState(model.definition);
-
-  let values = $state(initialState.values);
-  let disabled = $state(initialState.disabled);
+  let selectedModelId = $state(defaultModel.id);
+  const model = $derived(findModel(selectedModelId) ?? defaultModel);
+  let formState = $state(createFormState(defaultModel.definition));
 
   let previewParts = $state<PreviewPart[]>([]);
   let lastGeneratedKey = $state<string | null>(null);
@@ -37,20 +32,18 @@
   let client: CadWorkerClient | null = null;
 
   const formNodes = $derived(
-    buildFormNodes(model.definition, { values, disabled }),
+    buildFormNodes(model.definition, formState),
   );
   const effectiveConfig = $derived(
-    buildEffectiveConfig(model.definition, { values, disabled }),
+    buildEffectiveConfig(model.definition, formState),
   );
-  const configKey = $derived(JSON.stringify(effectiveConfig));
+  const configKey = $derived(`${model.id}::${JSON.stringify(effectiveConfig)}`);
 
   const genericIssues = $derived(
     validateConfigValues(model.definition, effectiveConfig),
   );
   const modelIssues = $derived(
-    genericIssues.length > 0
-      ? []
-      : (model.validate?.(effectiveConfig as unknown as WatermelonModelConfig) ?? []),
+    genericIssues.length > 0 ? [] : (model.validate?.(effectiveConfig) ?? []),
   );
   const issues = $derived([...genericIssues, ...modelIssues]);
 
@@ -74,7 +67,7 @@
 
   function setValueAtPath(path: string, value: string | number | boolean) {
     const keys = path.split(".");
-    let target: Record<string, unknown> = values;
+    let target: Record<string, unknown> = formState.values;
     for (let index = 0; index < keys.length - 1; index += 1) {
       const next = target[keys[index]];
       if (typeof next !== "object" || next === null) return;
@@ -115,7 +108,20 @@
         setValueAtPath(path, Number(node.autoValue.toPrecision(12)));
       }
     }
-    disabled[path] = !enabled;
+    formState.disabled[path] = !enabled;
+  }
+
+  function handleModelChange(event: Event) {
+    const nextId = (event.currentTarget as HTMLSelectElement).value;
+    if (nextId === selectedModelId) return;
+    const nextModel = findModel(nextId);
+    if (!nextModel) return;
+
+    selectedModelId = nextModel.id;
+    formState = createFormState(nextModel.definition);
+    lastGeneratedKey = null;
+    generationError = null;
+    exportError = null;
   }
 
   async function handleDownload() {
@@ -148,7 +154,7 @@
     generationError = null;
     const timer = setTimeout(() => {
       updating = true;
-      client?.requestGeneration(snapshot, key);
+      client?.requestGeneration(model.id, snapshot, key);
     }, 200);
 
     return () => clearTimeout(timer);
@@ -190,6 +196,19 @@
     <header class="sidebar-header">
       <h1>{model.name} configurator</h1>
       <p>Parametric, print-ready parts generated locally in your browser.</p>
+
+      <div class="model-picker">
+        <label for="model-select">Model</label>
+        <select
+          id="model-select"
+          value={selectedModelId}
+          onchange={handleModelChange}
+        >
+          {#each models as option (option.id)}
+            <option value={option.id}>{option.name}</option>
+          {/each}
+        </select>
+      </div>
     </header>
 
     <div class="sidebar-scroll">
@@ -385,6 +404,38 @@
     font-size: 0.8rem;
     line-height: 1.45;
     color: var(--text-muted);
+  }
+
+  .model-picker {
+    display: grid;
+    gap: 5px;
+    margin-top: 13px;
+  }
+
+  .model-picker label {
+    font-size: 0.72rem;
+    font-weight: 650;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .model-picker select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--input-bg);
+    color: var(--text);
+    font: inherit;
+    font-size: 0.9rem;
+    cursor: pointer;
+  }
+
+  .model-picker select:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+    border-color: transparent;
   }
 
   .sidebar-scroll {

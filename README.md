@@ -23,6 +23,7 @@ or CAD service is required.
 src/lib/cad/
   types.ts               generic config/model/form types
   config-form.ts         recursive UI generation, config building, validation
+  models.ts              model registry (dropdown source and worker lookup)
   model/watermelon.ts    Replicad geometry, runtime schema, model metadata
   worker.ts              OpenCascade init, generation, tessellation, STL export
   worker-client.ts       single worker, request IDs, stale-response filtering
@@ -39,12 +40,17 @@ The application only knows the generic `ParametricModel` contract:
 
 ```ts
 interface ParametricModel<TConfig> {
+  id: string;
   name: string;
   definition: { defaults: TConfig; metadata?: MetadataTree };
   generate(config: TConfig): ModelPart[];
   validate?(config: TConfig): ValidationIssue[];
 }
 ```
+
+The model dropdown is generated from `src/lib/cad/models.ts`. To add a model,
+create its Replicad module and add it to the registry. The UI, worker selection,
+preview, and export need no model-specific changes.
 
 `ModelPart` has `{ id, color, shape }`. The preview renders every returned part,
 and the exporter groups parts by color. Adding parts, colors, or changing their
@@ -58,6 +64,7 @@ count does not require UI or export changes.
 3. Keep the exported model object compatible with `ParametricModel`.
 4. Adjust the optional metadata block if the update adds fields that are absent
    from the default configuration.
+5. If you add a second model, register it in `src/lib/cad/models.ts`.
 
 A numeric property added to the default configuration appears in the UI
 automatically. Metadata is optional; it adds labels, units, bounds, steps,
@@ -96,7 +103,8 @@ generated geometry or while validation fails.
 
 ## Limitations
 
-- No configuration persistence; a page reload restores defaults.
+- No configuration persistence; a page reload restores defaults. Switching
+  models also resets the form to that model's defaults.
 - No user-editable schema outside the model definition. TypeScript interfaces are
   not reflected at runtime.
 - Metadata-only fields need an explicit `defaultValue` or `computeDefault`; a

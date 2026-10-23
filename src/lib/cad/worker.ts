@@ -3,16 +3,16 @@ import { setOC } from "replicad";
 import opencascade from "replicad-opencascadejs";
 import opencascadeWasmUrl from "replicad-opencascadejs/wasm?url";
 
-import { watermelonModel, type WatermelonModelConfig } from "./model/watermelon";
+import { findModel } from "./models";
 import { buildStlExport } from "./stl";
-import type { ModelPart } from "./types";
+import type { AnyParametricModel, ModelPart } from "./types";
 import type { PreviewPart, WorkerRequest, WorkerResponse } from "./preview";
 
 const PREVIEW_TOLERANCE = 0.08;
 const PREVIEW_ANGULAR_TOLERANCE = 0.35;
 
 let initPromise: Promise<void> | null = null;
-let lastParts: ModelPart[] | null = null;
+let lastResult: { model: AnyParametricModel; parts: ModelPart[] } | null = null;
 
 function initOpenCascade(): Promise<void> {
   if (!initPromise) {
@@ -68,15 +68,19 @@ async function handleGenerate(request: Extract<WorkerRequest, { kind: "generate"
   try {
     await initOpenCascade();
 
-    const config = request.config as unknown as WatermelonModelConfig;
-    const parts = watermelonModel.generate(config);
+    const model = findModel(request.modelId);
+    if (!model) {
+      throw new Error(`Unknown model "${request.modelId}".`);
+    }
+
+    const parts = model.generate(request.config);
 
     if (!parts.length) {
       throw new Error("The model generated no parts.");
     }
 
     const previewParts = parts.map(tessellate);
-    lastParts = parts;
+    lastResult = { model, parts };
 
     const transfer: Transferable[] = [];
     for (const part of previewParts) {
@@ -108,11 +112,11 @@ async function handleExport(request: Extract<WorkerRequest, { kind: "export" }>)
   try {
     await initOpenCascade();
 
-    if (!lastParts) {
+    if (!lastResult) {
       throw new Error("No generated model is available for export.");
     }
 
-    const files = await buildStlExport(watermelonModel.name, lastParts);
+    const files = await buildStlExport(lastResult.model.name, lastResult.parts);
     const transfer = files.map((file) => file.data);
 
     respond({ kind: "export-result", requestId: request.requestId, files }, transfer);

@@ -82,12 +82,17 @@ export interface ModelPart {
  * CAD entry point.
  */
 export interface ParametricModel<TConfig extends ConfigObject = ConfigObject> {
+  /** Stable, URL-safe identifier used to select the model in the UI and worker. */
+  id: string;
   name: string;
   definition: ConfigDefinition<TConfig>;
   generate(config: TConfig): ModelPart[];
   /** Optional extra validation. Called only when generic validation passed. */
   validate?(config: TConfig): ValidationIssue[];
 }
+
+/** Heterogeneous model handle used by the generic UI and worker. */
+export type AnyParametricModel = ParametricModel<any>;
 
 export interface FormNodeBase {
   key: string;

@@ -76,13 +76,14 @@ export class CadWorkerClient {
   }
 
   /** Sends a generation request. Only the newest request's response is reported. */
-  requestGeneration(config: ConfigObject, configKey: string): void {
+  requestGeneration(modelId: string, config: ConfigObject, configKey: string): void {
     if (this.terminated) return;
     const requestId = this.nextRequestId++;
     this.latestGenerationId = requestId;
     const request: WorkerRequest = {
       kind: "generate",
       requestId,
+      modelId,
       configKey,
       config,
     };
