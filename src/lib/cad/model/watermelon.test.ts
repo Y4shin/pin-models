@@ -281,31 +281,38 @@ describe("watermelon Replicad model", () => {
     expect(issues.some((issue) => /Seed tips/i.test(issue.message))).toBe(true);
   });
 
-  it("rejects insufficient top wall and seed-to-slot clearance", () => {
+  it("rejects a pin that is too thick for the top wall", () => {
     const thickPin: WatermelonModelConfig = {
       ...baseConfig,
       pin: { ...baseConfig.pin, thickness: 1.5 },
     };
     const issues = validateWatermelonModel(thickPin);
 
-    expect(issues.some((issue) => /side insertion slot/i.test(issue.message))).toBe(
-      true,
-    );
     expect(issues.some((issue) => /Thickness must be at least/i.test(issue.message))).toBe(
       true,
     );
   });
 
-  it("rejects seeds that collide with the retaining slot or clip", () => {
+  it("requires one printed layer of red between a seed and the pin cavity", () => {
     const small: WatermelonModelConfig = {
       ...baseConfig,
       watermelon: { ...baseConfig.watermelon, width: 45 },
     };
     const issues = validateWatermelonModel(small);
 
-    expect(issues.some((issue) => /seed is too close/i.test(issue.message))).toBe(
-      true,
-    );
+    expect(
+      issues.some(
+        (issue) =>
+          /Seed 1 leaves only/i.test(issue.message) &&
+          /one printed layer/i.test(issue.message),
+      ),
+    ).toBe(true);
+
+    const safe: WatermelonModelConfig = {
+      ...baseConfig,
+      watermelon: { ...baseConfig.watermelon, width: 66 },
+    };
+    expect(validateWatermelonModel(safe)).toEqual([]);
   });
 
   it("accepts a larger nozzle when the part and pin are made thicker", () => {

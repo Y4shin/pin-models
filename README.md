@@ -68,6 +68,10 @@ preview, and export need no model-specific changes.
 and the exporter groups parts by color. Adding parts, colors, or changing their
 count does not require UI or export changes.
 
+The viewer has `Iso`, `Front`, `Back`, `Side`, and `Cavity` presets. Lighting is
+camera-relative with soft self-shadowing and a low ambient fill, so recesses and
+the pin cavity stay readable without flattening the model.
+
 ## Updating the model
 
 1. Edit the geometry and configuration in Replicad Studio.
@@ -132,9 +136,9 @@ Validation returns clear errors before geometry is generated. It includes:
   side-insertion slot is intentionally allowed to cross the rind.
 - Seed tips must be at least `2 × nozzleDiameter` wide and seed inserts at least
   three layers deep.
-- A minimum red wall between the side-insertion slot and the seed recesses.
-- The retaining slot and clip must stay clear of every seed whose Y range
-  overlaps the pin slot.
+- At least one printed layer (`layerHeight`) of pure red between every seed
+  recess and every pin cavity: the main slot, the side-entry extension, and the
+  retaining clip.
 - Layer height must not exceed the nozzle diameter.
 
 ### Optional and automatic fields (generic feature)

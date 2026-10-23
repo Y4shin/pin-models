@@ -253,16 +253,12 @@ function seedProfileSamples(metrics: SeedProfileMetrics): Vec2[] {
   ];
 }
 
-/**
- * World-space X/Y bounds of one seed. Used to keep the retaining slot and clip
- * away from the seed recesses without running CAD during validation.
- */
-export function seedWorldBounds(
+export function seedWorldPolygon(
   fleshRadius: number,
   seedAngle: number,
   angleDegrees: number,
   rowFraction = SEED_ROW_RADIUS_FRACTION,
-): { minX: number; maxX: number; minY: number; maxY: number } {
+): [number, number][] {
   const samples = seedProfileSamples(seedProfileMetrics(fleshRadius, seedAngle));
   const rotation = ((angleDegrees + 90) * Math.PI) / 180;
   const radians = (angleDegrees * Math.PI) / 180;
@@ -272,18 +268,39 @@ export function seedWorldBounds(
   const cos = Math.cos(rotation);
   const sin = Math.sin(rotation);
 
+  return samples.map(([x, y]) => [
+    centerX + x * cos - y * sin,
+    centerY + x * sin + y * cos,
+  ]);
+}
+
+/**
+ * World-space X/Y bounds of one seed. Kept for callers that only need the
+ * envelope; the red-wall check uses the sampled polygon for accuracy.
+ */
+export function seedWorldBounds(
+  fleshRadius: number,
+  seedAngle: number,
+  angleDegrees: number,
+  rowFraction = SEED_ROW_RADIUS_FRACTION,
+): { minX: number; maxX: number; minY: number; maxY: number } {
+  const points = seedWorldPolygon(
+    fleshRadius,
+    seedAngle,
+    angleDegrees,
+    rowFraction,
+  );
+
   let minX = Infinity;
   let maxX = -Infinity;
   let minY = Infinity;
   let maxY = -Infinity;
 
-  for (const [x, y] of samples) {
-    const worldX = centerX + x * cos - y * sin;
-    const worldY = centerY + x * sin + y * cos;
-    minX = Math.min(minX, worldX);
-    maxX = Math.max(maxX, worldX);
-    minY = Math.min(minY, worldY);
-    maxY = Math.max(maxY, worldY);
+  for (const [x, y] of points) {
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y);
   }
 
   return { minX, maxX, minY, maxY };
@@ -308,7 +325,8 @@ export interface DerivedGeometry {
   cutoutLength: number;
   minTopWall: number;
   minColorWall: number;
-  minSeedWall: number;
+  /** One printed layer of pure red between a seed and a pin cavity. */
+  minRedWall: number;
 }
 
 /**
@@ -391,7 +409,7 @@ export function deriveGeometry(config: WatermelonModelConfig): DerivedGeometry {
     cutoutLength,
     minTopWall: Math.max(3 * layer, 1.5 * nozzle),
     minColorWall,
-    minSeedWall: Math.max(2 * nozzle, 3 * layer),
+    minRedWall: layer,
   };
 }
 
@@ -668,6 +686,173 @@ function mm(value: number): string {
   return `${Number(value.toFixed(2))} mm`;
 }
 
+type CavityBox = {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  minZ: number;
+  maxZ: number;
+};
+
+type Point2 = readonly [number, number];
+
+function pointOnSegment(point: Point2, start: Point2, end: Point2): boolean {
+  const cross =
+    (point[1] - start[1]) * (end[0] - start[0]) -
+    (point[0] - start[0]) * (end[1] - start[1]);
+  if (Math.abs(cross) > EPSILON) return false;
+  return (
+    point[0] >= Math.min(start[0], end[0]) - EPSILON &&
+    point[0] <= Math.max(start[0], end[0]) + EPSILON &&
+    point[1] >= Math.min(start[1], end[1]) - EPSILON &&
+    point[1] <= Math.max(start[1], end[1]) + EPSILON
+  );
+}
+
+/** Ray-casting test. Points on the boundary count as inside. */
+function pointInPolygon(point: Point2, polygon: Point2[]): boolean {
+  let inside = false;
+  for (
+    let index = 0, previous = polygon.length - 1;
+    index < polygon.length;
+    previous = index++
+  ) {
+    const a = polygon[previous];
+    const b = polygon[index];
+    if (pointOnSegment(point, a, b)) return true;
+    const intersects =
+      a[1] > point[1] !== b[1] > point[1] &&
+      point[0] <
+        ((b[0] - a[0]) * (point[1] - a[1])) / (b[1] - a[1]) + a[0];
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+function orientation(a: Point2, b: Point2, c: Point2): number {
+  const value =
+    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+  if (Math.abs(value) <= EPSILON) return 0;
+  return value > 0 ? 1 : -1;
+}
+
+function segmentsIntersect(
+  a: Point2,
+  b: Point2,
+  c: Point2,
+  d: Point2,
+): boolean {
+  const o1 = orientation(a, b, c);
+  const o2 = orientation(a, b, d);
+  const o3 = orientation(c, d, a);
+  const o4 = orientation(c, d, b);
+
+  if (o1 !== o2 && o3 !== o4) return true;
+  return (
+    (o1 === 0 && pointOnSegment(c, a, b)) ||
+    (o2 === 0 && pointOnSegment(d, a, b)) ||
+    (o3 === 0 && pointOnSegment(a, c, d)) ||
+    (o4 === 0 && pointOnSegment(b, c, d))
+  );
+}
+
+function pointSegmentDistance(
+  point: Point2,
+  start: Point2,
+  end: Point2,
+): number {
+  const dx = end[0] - start[0];
+  const dy = end[1] - start[1];
+  const lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared <= EPSILON) {
+    return Math.hypot(point[0] - start[0], point[1] - start[1]);
+  }
+  const t = Math.max(
+    0,
+    Math.min(
+      1,
+      ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) /
+        lengthSquared,
+    ),
+  );
+  return Math.hypot(
+    point[0] - (start[0] + t * dx),
+    point[1] - (start[1] + t * dy),
+  );
+}
+
+function pointRectDistance(point: Point2, box: CavityBox): number {
+  const dx = Math.max(box.minX - point[0], 0, point[0] - box.maxX);
+  const dy = Math.max(box.minY - point[1], 0, point[1] - box.maxY);
+  return Math.hypot(dx, dy);
+}
+
+/** Minimum 2D distance between a seed polygon and a cavity rectangle. */
+function polygonRectDistance(points: Point2[], box: CavityBox): number {
+  const corners: Point2[] = [
+    [box.minX, box.minY],
+    [box.maxX, box.minY],
+    [box.maxX, box.maxY],
+    [box.minX, box.maxY],
+  ];
+
+  for (const point of points) {
+    if (
+      point[0] >= box.minX - EPSILON &&
+      point[0] <= box.maxX + EPSILON &&
+      point[1] >= box.minY - EPSILON &&
+      point[1] <= box.maxY + EPSILON
+    ) {
+      return 0;
+    }
+  }
+
+  for (const corner of corners) {
+    if (pointInPolygon(corner, points)) return 0;
+  }
+
+  for (let index = 0; index < points.length; index += 1) {
+    const a = points[index];
+    const b = points[(index + 1) % points.length];
+    for (let corner = 0; corner < corners.length; corner += 1) {
+      const c = corners[corner];
+      const d = corners[(corner + 1) % corners.length];
+      if (segmentsIntersect(a, b, c, d)) return 0;
+    }
+  }
+
+  let minimum = Infinity;
+  for (const point of points) {
+    minimum = Math.min(minimum, pointRectDistance(point, box));
+  }
+  for (const corner of corners) {
+    for (let index = 0; index < points.length; index += 1) {
+      minimum = Math.min(
+        minimum,
+        pointSegmentDistance(
+          corner,
+          points[index],
+          points[(index + 1) % points.length],
+        ),
+      );
+    }
+  }
+  return minimum;
+}
+
+/** 3D clearance between a seed recess and one cavity box. */
+function seedCavityGap(
+  seed: Point2[],
+  seedMinZ: number,
+  seedMaxZ: number,
+  box: CavityBox,
+): number {
+  const verticalGap = Math.max(box.minZ - seedMaxZ, seedMinZ - box.maxZ, 0);
+  const lateral = polygonRectDistance(seed, box);
+  return verticalGap > 0 ? Math.hypot(lateral, verticalGap) : lateral;
+}
+
 export function validateWatermelonModel(
   config: WatermelonModelConfig,
 ): ValidationIssue[] {
@@ -835,48 +1020,65 @@ export function validateWatermelonModel(
     });
   }
 
-  // Complex retaining geometry must not touch the seeds. The slot and clip
-  // envelope must be horizontally clear of every seed whose Y range overlaps
-  // the pin slot.
-  const clipLength = derived.pinRecp.retainerClip?.cavityLength ?? 0;
-  const retentionMinX = -pin.length / 2 - clipLength;
-  const retentionMaxX = pin.length / 2 + clipLength;
+  // Every pin cavity and every seed recess must be separated by at least one
+  // printed layer of pure red. The boxes cover the main slot, the side-entry
+  // extension, and the retaining-clip cavity.
+  const slotFarY = derived.pinRecpOffset + derived.slotWidth;
+  const cavityBoxes: CavityBox[] = [
+    {
+      minX: -pin.length / 2,
+      maxX: pin.length / 2,
+      minY: derived.pinRecpOffset,
+      maxY: slotFarY,
+      minZ: 0,
+      maxZ: derived.openingHeight,
+    },
+  ];
+
+  if (derived.extraSpace > 0) {
+    cavityBoxes.push({
+      minX: -pin.length / 2 - derived.extraSpace,
+      maxX: -pin.length / 2,
+      minY: derived.pinRecpOffset,
+      maxY: slotFarY,
+      minZ: 0,
+      maxZ: derived.slotDepth,
+    });
+  }
+
+  if (derived.pinRecp.retainerClip) {
+    const clipLength = derived.pinRecp.retainerClip.cavityLength;
+    cavityBoxes.push({
+      minX: -pin.length / 2 - clipLength,
+      maxX: -pin.length / 2,
+      minY: derived.pinRecpOffset,
+      maxY: slotFarY,
+      minZ: derived.openingHeight,
+      maxZ: derived.receptacleHeight,
+    });
+  }
 
   for (let index = 0; index < SEED_COUNT; index += 1) {
-    const seed = seedWorldBounds(
+    const points = seedWorldPolygon(
       fleshRadius,
       DEFAULT_SEED_ANGLE,
       SEED_START_ANGLE + index * SEED_STEP_ANGLE,
     );
-
-    const overlapsSlotY =
-      seed.maxY + derived.minSeedWall > derived.pinRecpOffset &&
-      seed.minY - derived.minSeedWall <
-        derived.pinRecpOffset + derived.slotWidth;
-    if (!overlapsSlotY) continue;
-
-    const clearLeft =
-      seed.maxX + derived.minSeedWall <= retentionMinX + EPSILON;
-    const clearRight =
-      seed.minX - derived.minSeedWall >= retentionMaxX - EPSILON;
-    if (!clearLeft && !clearRight) {
+    const seedBottom = thickness - seedDepth;
+    let minimumGap = Infinity;
+    for (const box of cavityBoxes) {
+      minimumGap = Math.min(
+        minimumGap,
+        seedCavityGap(points, seedBottom, thickness, box),
+      );
+    }
+    if (minimumGap + EPSILON < derived.minRedWall) {
       issues.push({
         path: "watermelon.width",
-        message:
-          "A seed is too close to the retaining slot or clip. Increase the watermelon width, shorten the pin, or reduce the rind widths.",
+        message: `Seed ${index + 1} leaves only ${mm(Math.max(0, minimumGap))} of red to the pin cavity. Leave at least ${mm(derived.minRedWall)} (one printed layer). Increase the watermelon width, shorten the pin, or reduce the rind widths.`,
       });
       break;
     }
-  }
-
-  // The side insertion slot runs beneath the seed pattern. Keep a printable
-  // wall between the slot ceiling and the seed recess.
-  const sideSlotGap = thickness - seedDepth - derived.slotDepth;
-  if (sideSlotGap + EPSILON < derived.minSeedWall) {
-    issues.push({
-      path: "watermelon.thickness",
-      message: `Only ${mm(sideSlotGap)} remains between the side insertion slot and the seed recess. A minimum of ${mm(derived.minSeedWall)} is required. Increase the watermelon thickness or reduce the pin thickness.`,
-    });
   }
 
   // There must be a usable retaining tab region.
